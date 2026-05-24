@@ -25,9 +25,14 @@ class Client:
         self.subset = subset
         self.labels = labels
         self.cfg = cfg
-        self.train_loader = make_client_loader(subset, cfg.batch_size, shuffle=True)
+        nw = getattr(cfg, "num_workers", 0)
+        self.train_loader = make_client_loader(
+            subset, cfg.batch_size, shuffle=True, num_workers=nw
+        )
         # A separate, non-shuffled loader used only for the pow-d loss probe.
-        self.probe_loader = make_client_loader(subset, cfg.batch_size, shuffle=False)
+        self.probe_loader = make_client_loader(
+            subset, cfg.batch_size, shuffle=False, num_workers=nw
+        )
 
     @property
     def size(self) -> int:

@@ -33,7 +33,9 @@ class Server:
         self.clients = clients
         self.model_builder = model_builder
         self.global_model = model_builder().to(cfg.device)
-        self.test_loader = get_test_loader(test_set)
+        self.test_loader = get_test_loader(
+            test_set, num_workers=getattr(cfg, "num_workers", 0)
+        )
         self.rng = np.random.default_rng(cfg.seed)
 
         self.client_sizes = np.array([c.size for c in clients], dtype=np.float64)
@@ -134,6 +136,8 @@ class Server:
         correct, total, loss_sum = 0, 0, 0.0
         per_class_correct = np.zeros(cfg.num_classes)
         per_class_total = np.zeros(cfg.num_classes)
+        all_preds: List[int] = []
+        all_labels: List[int] = []
         ce = nn.CrossEntropyLoss(reduction="sum")
         for x, y in self.test_loader:
             x, y = x.to(cfg.device), y.to(cfg.device)
@@ -142,6 +146,8 @@ class Server:
             pred = logits.argmax(dim=1)
             correct += (pred == y).sum().item()
             total += y.numel()
+            all_preds.extend(pred.cpu().tolist())
+            all_labels.extend(y.cpu().tolist())
             for c in range(cfg.num_classes):
                 m = (y == c)
                 per_class_total[c] += m.sum().item()
@@ -149,8 +155,18 @@ class Server:
         per_class_acc = np.where(
             per_class_total > 0, per_class_correct / np.maximum(per_class_total, 1), 0.0
         )
-        return {
+        out = {
             "loss": loss_sum / max(total, 1),
             "acc": correct / max(total, 1),
             "per_class_acc": per_class_acc.tolist(),
         }
+        # Quadratic Weighted Kappa — APTOS' official metric. Cheap to compute,
+        # sklearn import is local so non-aptos runs don't pay the import cost.
+        try:
+            from sklearn.metrics import cohen_kappa_score
+            out["qwk"] = float(
+                cohen_kappa_score(all_labels, all_preds, weights="quadratic")
+            )
+        except ImportError:
+            pass
+        return out

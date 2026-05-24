@@ -50,7 +50,7 @@ def main():
     cfg = apply_overrides(get_config(), args)
 
     if cfg.device == "cuda" and not torch.cuda.is_available():
-        cfg.device = "cpu"
+        cfg.device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"[cfg] device={cfg.device} dataset={cfg.dataset} N={cfg.num_clients} "
           f"m={cfg.active_size_m} d={cfg.candidate_size_d} "
           f"selection={cfg.selection_strategy} agg={cfg.aggregation}")
@@ -89,11 +89,14 @@ def main():
                 metrics = server.evaluate()
                 best_acc = max(best_acc, metrics["acc"])
                 logger.log({"type": "eval", "round": r, **metrics})
-                pbar.set_postfix({
+                postfix = {
                     "acc": f"{metrics['acc']:.3f}",
                     "best": f"{best_acc:.3f}",
                     "loss": f"{metrics['loss']:.3f}",
-                })
+                }
+                if "qwk" in metrics:
+                    postfix["qwk"] = f"{metrics['qwk']:.3f}"
+                pbar.set_postfix(postfix)
 
         print(f"[done] best acc = {best_acc:.4f}; log: {logger.path}")
 

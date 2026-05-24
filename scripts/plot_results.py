@@ -36,6 +36,7 @@ SELECTION_CMAP = LinearSegmentedColormap.from_list(
 CIFAR10_CLASSES = ["plane", "auto", "bird", "cat", "deer",
                    "dog", "frog", "horse", "ship", "truck"]
 MNIST_CLASSES = [str(i) for i in range(10)]
+APTOS_CLASSES = ["No DR", "Mild", "Moderate", "Severe", "Proliferative"]
 
 
 def set_style():
@@ -110,6 +111,8 @@ def load_run(path: str) -> Run:
 def class_names(run: Run) -> List[str]:
     if run.cfg.get("dataset") == "cifar10":
         return CIFAR10_CLASSES
+    if run.cfg.get("dataset") == "aptos":
+        return APTOS_CLASSES
     return MNIST_CLASSES[: run.num_classes]
 
 
@@ -146,6 +149,37 @@ def plot_accuracy(runs: List[Run], out: str):
     ax.set_ylabel("Test accuracy")
     ax.set_title("Accuracy over rounds")
     ax.set_ylim(0, 1)
+    ax.legend(loc="lower right")
+    fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
+
+
+def plot_qwk(runs: List[Run], out: str):
+    """Quadratic Weighted Kappa over rounds (APTOS metric)."""
+    any_qwk = any("qwk" in e for r in runs for e in r.evals)
+    if not any_qwk:
+        return
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for i, run in enumerate(runs):
+        evals = [e for e in run.evals if "qwk" in e]
+        if not evals:
+            continue
+        x = [e["round"] for e in evals]
+        y = [e["qwk"] for e in evals]
+        color = PALETTE[i % len(PALETTE)]
+        ax.plot(x, y, color=color, alpha=0.25, lw=1.2)
+        ax.plot(x, _smooth(y), color=color, lw=2.3, label=run.label)
+        best = max(evals, key=lambda e: e["qwk"])
+        ax.scatter([best["round"]], [best["qwk"]], color=color, s=80,
+                   zorder=5, edgecolor="white", linewidth=1.5)
+        ax.annotate(f"{best['qwk']:.3f}",
+                    (best["round"], best["qwk"]),
+                    textcoords="offset points", xytext=(6, 6),
+                    fontsize=9, color=color, fontweight="bold")
+    ax.axhline(0.0, ls=":", color="#888", lw=1)
+    ax.set_xlabel("Communication round")
+    ax.set_ylabel("Quadratic Weighted Kappa")
+    ax.set_title("QWK over rounds (APTOS official metric)")
+    ax.set_ylim(-0.1, 1.0)
     ax.legend(loc="lower right")
     fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
 
@@ -377,10 +411,16 @@ def plot_summary_card(run: Run, out: str):
     ax.set_xlabel("Client id")
     ax.set_ylabel("# rounds trained")
 
+    qwk_str = ""
+    if run.evals:
+        best_qwk_eval = max((e for e in run.evals if "qwk" in e),
+                            key=lambda e: e["qwk"], default=None)
+        if best_qwk_eval is not None:
+            qwk_str = f"  •  best QWK={best_qwk_eval['qwk']:.3f}"
     fig.suptitle(
         f"{run.label}  •  {run.cfg.get('dataset')}  •  N={run.num_clients}  "
         f"•  m={run.cfg.get('active_size_m')}/d={run.cfg.get('candidate_size_d')}  "
-        f"•  α={run.cfg.get('alpha')}  •  {len(run.rounds)} rounds",
+        f"•  α={run.cfg.get('alpha')}  •  {len(run.rounds)} rounds{qwk_str}",
         fontsize=14, fontweight="bold", y=1.00,
     )
     fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
@@ -411,6 +451,7 @@ def main(argv):
     # Comparison plots (work for 1+ runs).
     plot_accuracy(runs, os.path.join(outdir, "01_accuracy"))
     plot_loss(runs, os.path.join(outdir, "02_loss"))
+    plot_qwk(runs, os.path.join(outdir, "02b_qwk"))
 
     # Per-run plots.
     for run in runs:

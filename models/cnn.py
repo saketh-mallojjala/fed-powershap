@@ -54,7 +54,3 @@ class MNISTCNN(nn.Module):
         return self.classifier(x)
 
 
-def build_model(cfg) -> nn.Module:
-    if cfg.dataset == "cifar10":
-        return CIFARCNN(cfg.num_classes, cfg.hidden_dim)
-    return MNISTCNN(cfg.num_classes, cfg.hidden_dim)

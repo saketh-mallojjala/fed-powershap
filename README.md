@@ -1,5 +1,31 @@
 # ShapFed + Power-of-Choice
 
+## APTOS 2019 quickstart
+
+```bash
+# 1. Kaggle credentials at ~/.kaggle/kaggle.json (one-time)
+#    https://www.kaggle.com/settings → "Create New API Token"
+# 2. Accept competition rules in browser (one-time):
+#    https://www.kaggle.com/competitions/aptos2019-blindness-detection/rules
+
+pip install -r requirements.txt
+python scripts/download_aptos.py        # ~10 GB, into data_cache/aptos2019/
+python scripts/aptos_smoke.py           # 2-round sanity check
+
+# Full APTOS run (20 clients, ResNet-18 pretrained, 100 rounds)
+python main.py \
+  --dataset aptos --model resnet18 --num-classes 5 \
+  --image-size 224 --batch-size 32 --num-workers 4 \
+  --num-clients 20 --alpha 0.3 --num-rounds 100 \
+  --candidate-size-d 10 --active-size-m 5 --local-epochs 2 --local-lr 0.001
+```
+
+`evaluate()` reports **Quadratic Weighted Kappa (QWK)** alongside accuracy
+when sklearn is installed — that's APTOS' official metric since DR grades
+0–4 are ordinal.
+
+## Overview
+
 Federated learning that combines two complementary pieces of prior work:
 
 1. **Power-of-Choice** (Cho et al., 2020) for *client selection*: each round,

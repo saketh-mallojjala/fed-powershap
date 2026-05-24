@@ -12,10 +12,12 @@ class Config:
     log_dir: str = "logs"
 
     # Dataset
-    dataset: str = "cifar10"         # cifar10 | mnist | fmnist
+    dataset: str = "cifar10"         # cifar10 | mnist | fmnist | aptos
     data_root: str = "./data_cache"
     num_classes: int = 10
     batch_size: int = 64
+    image_size: int = 224            # only used by image-folder datasets (aptos, ...)
+    num_workers: int = 0             # DataLoader workers; bump to 2-4 for aptos
 
     # Federation
     num_clients: int = 20
@@ -44,8 +46,9 @@ class Config:
     cssv_ema: float = 0.5
 
     # Model
-    model: str = "cnn"
+    model: str = "cnn"               # cnn | resnet18 | resnet34 | resnet50
     hidden_dim: int = 64
+    pretrained: bool = True          # ImageNet weights for resnet*
 
     # Evaluation
     eval_every: int = 1

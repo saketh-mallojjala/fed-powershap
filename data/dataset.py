@@ -9,8 +9,10 @@ import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision import datasets, transforms
 
+from .aptos import load_aptos
 
-def _get_transforms(dataset: str) -> Tuple[transforms.Compose, transforms.Compose]:
+
+def _get_transforms(dataset: str, image_size: int = 224) -> Tuple[transforms.Compose, transforms.Compose]:
     if dataset == "cifar10":
         mean, std = (0.4914, 0.4822, 0.4465), (0.2470, 0.2435, 0.2616)
         train_tf = transforms.Compose([
@@ -30,13 +32,35 @@ def _get_transforms(dataset: str) -> Tuple[transforms.Compose, transforms.Compos
             transforms.Normalize(mean, std),
         ])
         test_tf = train_tf
+    elif dataset == "aptos":
+        # ImageNet stats — pretrained backbone expects them.
+        # Use v2 transforms because they work on uint8 tensors (cache mode)
+        # and PIL alike.
+        from torchvision.transforms import v2
+        mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+        train_tf = v2.Compose([
+            v2.Resize((image_size, image_size), antialias=True),
+            v2.RandomHorizontalFlip(),
+            v2.RandomVerticalFlip(),
+            v2.RandomRotation(20),
+            v2.ColorJitter(brightness=0.1, contrast=0.1),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=list(mean), std=list(std)),
+        ])
+        test_tf = v2.Compose([
+            v2.Resize((image_size, image_size), antialias=True),
+            v2.ToImage(),
+            v2.ToDtype(torch.float32, scale=True),
+            v2.Normalize(mean=list(mean), std=list(std)),
+        ])
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
     return train_tf, test_tf
 
 
-def _load_raw(dataset: str, root: str):
-    train_tf, test_tf = _get_transforms(dataset)
+def _load_raw(dataset: str, root: str, image_size: int = 224, seed: int = 42):
+    train_tf, test_tf = _get_transforms(dataset, image_size=image_size)
     os.makedirs(root, exist_ok=True)
     if dataset == "cifar10":
         train = datasets.CIFAR10(root, train=True, download=True, transform=train_tf)
@@ -47,6 +71,8 @@ def _load_raw(dataset: str, root: str):
     elif dataset == "fmnist":
         train = datasets.FashionMNIST(root, train=True, download=True, transform=train_tf)
         test = datasets.FashionMNIST(root, train=False, download=True, transform=test_tf)
+    elif dataset == "aptos":
+        train, test = load_aptos(root, train_tf, test_tf, seed=seed, image_size=image_size)
     else:
         raise ValueError(f"Unsupported dataset: {dataset}")
     return train, test
@@ -83,7 +109,12 @@ def dirichlet_partition(
 
 def build_federated_datasets(cfg) -> Tuple[List[Subset], Dataset, Dict[int, np.ndarray]]:
     """Return per-client train subsets, the shared test set, and per-client label arrays."""
-    train, test = _load_raw(cfg.dataset, cfg.data_root)
+    train, test = _load_raw(
+        cfg.dataset,
+        cfg.data_root,
+        image_size=getattr(cfg, "image_size", 224),
+        seed=cfg.seed,
+    )
     if hasattr(train, "targets"):
         labels = np.array(train.targets)
     else:
@@ -102,10 +133,30 @@ def build_federated_datasets(cfg) -> Tuple[List[Subset], Dataset, Dict[int, np.n
     return client_subsets, test, client_labels
 
 
-def get_test_loader(test_set: Dataset, batch_size: int = 256) -> DataLoader:
-    return DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=0)
+def get_test_loader(test_set: Dataset, batch_size: int = 256, num_workers: int = 0) -> DataLoader:
+    return DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        persistent_workers=num_workers > 0,
+        pin_memory=False,  # MPS doesn't support pinned memory
+    )
 
 
-def make_client_loader(subset: Subset, batch_size: int, shuffle: bool = True) -> DataLoader:
+def make_client_loader(
+    subset: Subset,
+    batch_size: int,
+    shuffle: bool = True,
+    num_workers: int = 0,
+) -> DataLoader:
     g = torch.Generator()
-    return DataLoader(subset, batch_size=batch_size, shuffle=shuffle, num_workers=0, generator=g)
+    return DataLoader(
+        subset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        generator=g,
+        persistent_workers=num_workers > 0,
+        pin_memory=False,
+    )
