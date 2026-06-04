@@ -37,6 +37,14 @@ CIFAR10_CLASSES = ["plane", "auto", "bird", "cat", "deer",
                    "dog", "frog", "horse", "ship", "truck"]
 MNIST_CLASSES = [str(i) for i in range(10)]
 APTOS_CLASSES = ["No DR", "Mild", "Moderate", "Severe", "Proliferative"]
+OCTMNIST_CLASSES = ["CNV", "DME", "Drusen", "Normal"]
+ISIC_CLASSES = ["AKIEC", "BCC", "BKL", "DF", "MEL", "NV", "VASC"]
+CHESTXRAY14_CLASSES = [
+    "Atelectasis", "Cardiomegaly", "Effusion", "Infiltration", "Mass",
+    "Nodule", "Pneumonia", "Pneumothorax", "Consolidation", "Edema",
+    "Emphysema", "Fibrosis", "Pleural_Thickening", "Hernia",
+]
+BRATS_CLASSES = ["LGG", "HGG"]
 
 
 def set_style():
@@ -108,11 +116,20 @@ def load_run(path: str) -> Run:
                rounds=rounds, evals=evals)
 
 
+_DATASET_CLASSES = {
+    "cifar10": CIFAR10_CLASSES,
+    "aptos": APTOS_CLASSES,
+    "octmnist": OCTMNIST_CLASSES,
+    "isic": ISIC_CLASSES,
+    "chestxray14": CHESTXRAY14_CLASSES,
+    "brats": BRATS_CLASSES,
+}
+
+
 def class_names(run: Run) -> List[str]:
-    if run.cfg.get("dataset") == "cifar10":
-        return CIFAR10_CLASSES
-    if run.cfg.get("dataset") == "aptos":
-        return APTOS_CLASSES
+    names = _DATASET_CLASSES.get(run.cfg.get("dataset"))
+    if names is not None:
+        return names
     return MNIST_CLASSES[: run.num_classes]
 
 
@@ -180,6 +197,37 @@ def plot_qwk(runs: List[Run], out: str):
     ax.set_ylabel("Quadratic Weighted Kappa")
     ax.set_title("QWK over rounds (APTOS official metric)")
     ax.set_ylim(-0.1, 1.0)
+    ax.legend(loc="lower right")
+    fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
+
+
+def plot_auc(runs: List[Run], out: str):
+    """Macro ROC-AUC over rounds (multi-label metric, e.g. ChestX-ray14)."""
+    any_auc = any("auc" in e for r in runs for e in r.evals)
+    if not any_auc:
+        return
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for i, run in enumerate(runs):
+        evals = [e for e in run.evals if "auc" in e]
+        if not evals:
+            continue
+        x = [e["round"] for e in evals]
+        y = [e["auc"] for e in evals]
+        color = PALETTE[i % len(PALETTE)]
+        ax.plot(x, y, color=color, alpha=0.25, lw=1.2)
+        ax.plot(x, _smooth(y), color=color, lw=2.3, label=run.label)
+        best = max(evals, key=lambda e: e["auc"])
+        ax.scatter([best["round"]], [best["auc"]], color=color, s=80,
+                   zorder=5, edgecolor="white", linewidth=1.5)
+        ax.annotate(f"{best['auc']:.3f}",
+                    (best["round"], best["auc"]),
+                    textcoords="offset points", xytext=(6, 6),
+                    fontsize=9, color=color, fontweight="bold")
+    ax.axhline(0.5, ls=":", color="#888", lw=1, label="chance")
+    ax.set_xlabel("Communication round")
+    ax.set_ylabel("Macro ROC-AUC")
+    ax.set_title("Macro AUC over rounds (multi-label metric)")
+    ax.set_ylim(0.4, 1.0)
     ax.legend(loc="lower right")
     fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
 
@@ -452,6 +500,7 @@ def main(argv):
     plot_accuracy(runs, os.path.join(outdir, "01_accuracy"))
     plot_loss(runs, os.path.join(outdir, "02_loss"))
     plot_qwk(runs, os.path.join(outdir, "02b_qwk"))
+    plot_auc(runs, os.path.join(outdir, "02c_auc"))
 
     # Per-run plots.
     for run in runs:

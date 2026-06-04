@@ -131,6 +131,12 @@ class Server:
 
     @torch.no_grad()
     def evaluate(self) -> Dict[str, float]:
+        if getattr(self.cfg, "task", "single_label") == "multi_label":
+            return self._evaluate_multilabel()
+        return self._evaluate_single_label()
+
+    @torch.no_grad()
+    def _evaluate_single_label(self) -> Dict[str, float]:
         cfg = self.cfg
         self.global_model.eval()
         correct, total, loss_sum = 0, 0, 0.0
@@ -162,11 +168,64 @@ class Server:
         }
         # Quadratic Weighted Kappa — APTOS' official metric. Cheap to compute,
         # sklearn import is local so non-aptos runs don't pay the import cost.
+        if cfg.dataset == "aptos":
+            try:
+                from sklearn.metrics import cohen_kappa_score
+                out["qwk"] = float(
+                    cohen_kappa_score(all_labels, all_preds, weights="quadratic")
+                )
+            except ImportError:
+                pass
+        return out
+
+    @torch.no_grad()
+    def _evaluate_multilabel(self) -> Dict[str, float]:
+        """Multi-label eval (ChestX-ray14): BCE loss + macro AUC / mAP.
+
+        ``acc`` is reported as the mean per-class accuracy at a 0.5 threshold so
+        the metric keys stay compatible with the single-label plots; ``auc`` is
+        the headline metric. ``per_class_acc`` (thresholded) and ``per_class_auc``
+        are both logged.
+        """
+        cfg = self.cfg
+        self.global_model.eval()
+        bce = nn.BCEWithLogitsLoss(reduction="sum")
+        loss_sum, n_elem = 0.0, 0
+        all_probs: List[np.ndarray] = []
+        all_targets: List[np.ndarray] = []
+        for x, y in self.test_loader:
+            x, y = x.to(cfg.device), y.to(cfg.device).float()
+            logits = self.global_model(x)
+            loss_sum += bce(logits, y).item()
+            n_elem += y.numel()
+            all_probs.append(torch.sigmoid(logits).cpu().numpy())
+            all_targets.append(y.cpu().numpy())
+
+        probs = np.concatenate(all_probs, axis=0)        # (N, C)
+        targets = np.concatenate(all_targets, axis=0)    # (N, C) in {0,1}
+        preds = (probs >= 0.5).astype(np.float32)
+
+        per_class_acc = (preds == targets).mean(axis=0)
+        out: Dict[str, float] = {
+            "loss": loss_sum / max(n_elem, 1),
+            "acc": float(per_class_acc.mean()),
+            "per_class_acc": per_class_acc.tolist(),
+        }
+
+        # Macro AUC / mAP — skip classes with a single label value in the test set.
         try:
-            from sklearn.metrics import cohen_kappa_score
-            out["qwk"] = float(
-                cohen_kappa_score(all_labels, all_preds, weights="quadratic")
-            )
+            from sklearn.metrics import average_precision_score, roc_auc_score
+            aucs, aps = [], []
+            for c in range(targets.shape[1]):
+                yc = targets[:, c]
+                if yc.min() == yc.max():
+                    continue
+                aucs.append(roc_auc_score(yc, probs[:, c]))
+                aps.append(average_precision_score(yc, probs[:, c]))
+            if aucs:
+                out["auc"] = float(np.mean(aucs))
+                out["map"] = float(np.mean(aps))
+                out["per_class_auc"] = aucs
         except ImportError:
             pass
         return out

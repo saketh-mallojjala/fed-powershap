@@ -9,6 +9,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import time
 from dataclasses import asdict, fields
 
@@ -16,7 +18,7 @@ import torch
 from tqdm import tqdm
 
 from config import Config, get_config
-from data import build_federated_datasets
+from data import MEDMNIST_REGISTRY, build_federated_datasets
 from federated import Client, Server
 from models import build_model
 from utils import JsonLogger, set_seed
@@ -44,10 +46,27 @@ def apply_overrides(cfg: Config, args) -> Config:
     return cfg
 
 
+def apply_dataset_defaults(cfg: Config) -> Config:
+    """Fill task / num_classes from the dataset registry so the user need not.
+
+    For MedMNIST-backed datasets the task and class count are intrinsic, so we
+    set them authoritatively. BraTS is a 2-class single-label problem.
+    """
+    if cfg.dataset in MEDMNIST_REGISTRY:
+        entry = MEDMNIST_REGISTRY[cfg.dataset]
+        cfg.num_classes = entry["num_classes"]
+        cfg.task = entry["task"]
+    elif cfg.dataset == "brats":
+        cfg.num_classes = 2
+        cfg.task = "single_label"
+    return cfg
+
+
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
     cfg = apply_overrides(get_config(), args)
+    cfg = apply_dataset_defaults(cfg)
 
     if cfg.device == "cuda" and not torch.cuda.is_available():
         cfg.device = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -96,6 +115,8 @@ def main():
                 }
                 if "qwk" in metrics:
                     postfix["qwk"] = f"{metrics['qwk']:.3f}"
+                if "auc" in metrics:
+                    postfix["auc"] = f"{metrics['auc']:.3f}"
                 pbar.set_postfix(postfix)
 
         print(f"[done] best acc = {best_acc:.4f}; log: {logger.path}")
@@ -103,3 +124,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # The JSONL log is flushed/closed by the JsonLogger context manager above,
+    # so a hard exit here is safe. It sidesteps occasional hangs in DataLoader
+    # worker / MPS teardown that would otherwise stall a multi-run script.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
