@@ -47,7 +47,8 @@ class Client:
 
     def probe_loss(self, global_model: nn.Module) -> float:
         return evaluate_local_loss(
-            global_model, self.probe_loader, self.cfg.device, max_batches=4
+            global_model, self.probe_loader, self.cfg.device, max_batches=4,
+            task=getattr(self.cfg, "task", "single_label"),
         )
 
     def local_train(
@@ -67,11 +68,14 @@ class Client:
             momentum=cfg.momentum,
             weight_decay=cfg.weight_decay,
         )
-        criterion = nn.CrossEntropyLoss()
+        multi_label = getattr(cfg, "task", "single_label") == "multi_label"
+        criterion = nn.BCEWithLogitsLoss() if multi_label else nn.CrossEntropyLoss()
 
         for _ in range(cfg.local_epochs):
             for x, y in self.train_loader:
                 x, y = x.to(cfg.device), y.to(cfg.device)
+                if multi_label:
+                    y = y.float()
                 optimizer.zero_grad()
                 loss = criterion(model(x), y)
                 loss.backward()

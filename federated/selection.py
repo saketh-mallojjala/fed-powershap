@@ -91,20 +91,28 @@ def evaluate_local_loss(
     loader,
     device: str,
     max_batches: int = 4,
+    task: str = "single_label",
 ) -> float:
-    """Proxy for F_k(w_t): mean cross-entropy over a few mini-batches.
+    """Proxy for F_k(w_t): mean loss over a few mini-batches.
 
-    Power-of-Choice queries this per candidate per round, so cap the batch
-    count to keep overhead small.
+    Cross-entropy for single-label, BCE for multi-label. Power-of-Choice
+    queries this per candidate per round, so cap the batch count to keep
+    overhead small.
     """
     model.eval()
-    ce = torch.nn.CrossEntropyLoss(reduction="sum")
+    multi_label = task == "multi_label"
+    criterion = (
+        torch.nn.BCEWithLogitsLoss(reduction="sum") if multi_label
+        else torch.nn.CrossEntropyLoss(reduction="sum")
+    )
     total_loss, total_n = 0.0, 0
     for i, (x, y) in enumerate(loader):
         if i >= max_batches:
             break
         x, y = x.to(device), y.to(device)
+        if multi_label:
+            y = y.float()
         logits = model(x)
-        total_loss += ce(logits, y).item()
+        total_loss += criterion(logits, y).item()
         total_n += y.numel()
     return total_loss / max(total_n, 1)

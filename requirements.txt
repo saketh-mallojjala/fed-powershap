@@ -8,4 +8,6 @@ pyyaml>=6.0
 pandas>=2.0.0
 Pillow>=10.0.0
 scikit-learn>=1.3.0
+medmnist>=3.0.0  # octmnist / isic (dermamnist) / chestxray14 (chestmnist)
+nibabel>=5.0.0  # only needed for scripts/prep_brats_slices.py (BraTS NIfTI volumes)
 kaggle>=1.6.0  # only needed for scripts/download_aptos.py

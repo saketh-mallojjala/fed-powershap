@@ -12,9 +12,17 @@ class Config:
     log_dir: str = "logs"
 
     # Dataset
-    dataset: str = "cifar10"         # cifar10 | mnist | fmnist | aptos
+    # cifar10 | mnist | fmnist | aptos | octmnist | isic | chestxray14 | brats
+    dataset: str = "cifar10"
     data_root: str = "./data_cache"
     num_classes: int = 10
+    # single_label (CrossEntropy, accuracy/QWK) | multi_label (BCE, AUC/mAP).
+    # Auto-set from the dataset registry in main.py for medmnist/brats datasets.
+    task: str = "single_label"
+    # Cap the training pool to this many samples (stratified), 0 = use all.
+    # MedMNIST sets are 100k+ images; capping keeps per-round time and the
+    # non-IID setup comparable to the smaller APTOS run.
+    max_train_samples: int = 0
     batch_size: int = 64
     image_size: int = 224            # only used by image-folder datasets (aptos, ...)
     num_workers: int = 0             # DataLoader workers; bump to 2-4 for aptos

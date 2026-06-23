@@ -24,3 +24,6 @@ Thumbs.db
 *.pth
 *.ckpt
 *.pkl
+
+# Run console logs (tqdm/download spam)
+logs/*.out
