@@ -28,10 +28,12 @@ class CIFARCNN(nn.Module):
         )
         self.classifier = nn.Linear(hidden_dim, num_classes)
 
+    def extract_features(self, x):
+        """Penultimate representation (input to ``classifier``); used by MOON."""
+        return self.fc(self.features(x))
+
     def forward(self, x):
-        x = self.features(x)
-        x = self.fc(x)
-        return self.classifier(x)
+        return self.classifier(self.extract_features(x))
 
 
 class MNISTCNN(nn.Module):
@@ -48,9 +50,10 @@ class MNISTCNN(nn.Module):
         )
         self.classifier = nn.Linear(hidden_dim, num_classes)
 
+    def extract_features(self, x):
+        return self.fc(self.features(x))
+
     def forward(self, x):
-        x = self.features(x)
-        x = self.fc(x)
-        return self.classifier(x)
+        return self.classifier(self.extract_features(x))
 
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -108,6 +108,55 @@ def _load_raw(dataset: str, root: str, image_size: int = 224, seed: int = 42):
     return train, test
 
 
+class NoisyLabelDataset(Dataset):
+    """Wrap a client subset and override a precomputed set of training labels
+    (single-label). Simulates a low-quality client with mislabeled data."""
+
+    def __init__(self, base: Dataset, remap: Dict[int, int]):
+        self.base = base
+        self.remap = remap
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i: int):
+        x, y = self.base[i]
+        if i in self.remap:
+            return x, self.remap[i]
+        return x, y
+
+
+def _load_train_eval_view(dataset: str, root: str, image_size: int, seed: int):
+    """Return the *training* pool with **test** transforms (no augmentation).
+
+    Used to build per-client local test sets for fairness evaluation: same
+    underlying images as the client train subsets but evaluated deterministically.
+    The train/test split inside each loader is seeded, so item ordering matches
+    the augmenting view loaded by ``_load_raw``.
+    """
+    _, test_tf = _get_transforms(dataset, image_size=image_size)
+    if dataset == "cifar10":
+        return datasets.CIFAR10(root, train=True, download=False, transform=test_tf)
+    if dataset == "mnist":
+        return datasets.MNIST(root, train=True, download=False, transform=test_tf)
+    if dataset == "fmnist":
+        return datasets.FashionMNIST(root, train=True, download=False, transform=test_tf)
+    if dataset == "aptos":
+        train, _ = load_aptos(root, test_tf, test_tf, seed=seed, image_size=image_size)
+        return train
+    if dataset in MEDMNIST_REGISTRY:
+        entry = MEDMNIST_REGISTRY[dataset]
+        train, _ = load_medmnist(
+            entry["flag"], root, test_tf, test_tf,
+            task=entry["task"], image_size=image_size, seed=seed,
+        )
+        return train
+    if dataset == "brats":
+        train, _ = load_brats(root, test_tf, test_tf, seed=seed, image_size=image_size)
+        return train
+    raise ValueError(f"Unsupported dataset: {dataset}")
+
+
 def dirichlet_partition(
     labels: np.ndarray,
     num_clients: int,
@@ -137,8 +186,17 @@ def dirichlet_partition(
     return [np.array(ci, dtype=np.int64) for ci in client_indices]
 
 
-def build_federated_datasets(cfg) -> Tuple[List[Subset], Dataset, Dict[int, np.ndarray]]:
-    """Return per-client train subsets, the shared test set, and per-client label arrays."""
+def build_federated_datasets(
+    cfg,
+) -> Tuple[List[Subset], Dataset, Dict[int, np.ndarray], List[Optional[Subset]]]:
+    """Return per-client train subsets, the shared test set, per-client label
+    arrays, and per-client **local test** subsets (or ``None`` per client when
+    ``local_test_frac == 0``).
+
+    The per-client local test sets hold out ``cfg.local_test_frac`` of each
+    client's data (seeded, so identical across methods) and use non-augmenting
+    transforms. They drive the fairness (Jain index) evaluation.
+    """
     train, test = _load_raw(
         cfg.dataset,
         cfg.data_root,
@@ -168,9 +226,60 @@ def build_federated_datasets(cfg) -> Tuple[List[Subset], Dataset, Dict[int, np.n
         seed=cfg.seed,
     )
 
-    client_subsets = [Subset(train, keep[idx].tolist()) for idx in client_idx]
-    client_labels = {k: labels[idx] for k, idx in enumerate(client_idx)}
-    return client_subsets, test, client_labels
+    frac = float(getattr(cfg, "local_test_frac", 0.0))
+    train_eval = None
+    if frac > 0.0:
+        train_eval = _load_train_eval_view(
+            cfg.dataset, cfg.data_root,
+            image_size=getattr(cfg, "image_size", 224), seed=cfg.seed,
+        )
+
+    rng = np.random.default_rng(cfg.seed + 1)  # offset so split != partition rng
+    client_subsets: List[Subset] = []
+    client_test_subsets: List[Optional[Subset]] = []
+    client_labels: Dict[int, np.ndarray] = {}
+    for k, idx in enumerate(client_idx):
+        orig = keep[idx]                         # original dataset indices
+        n = len(idx)
+        n_test = int(round(n * frac)) if frac > 0.0 else 0
+        if frac > 0.0 and n > 1:
+            n_test = min(max(n_test, 1), n - 1)  # keep >=1 train and >=1 test
+        else:
+            n_test = 0
+        perm = rng.permutation(n)
+        test_pos, train_pos = perm[:n_test], perm[n_test:]
+
+        client_subsets.append(Subset(train, orig[train_pos].tolist()))
+        client_labels[k] = labels[idx][train_pos]
+        if n_test > 0 and train_eval is not None:
+            client_test_subsets.append(Subset(train_eval, orig[test_pos].tolist()))
+        else:
+            client_test_subsets.append(None)
+
+    # Optionally corrupt a fraction of clients' TRAINING labels (single-label).
+    noisy_frac = float(getattr(cfg, "noisy_client_frac", 0.0))
+    noise_rate = float(getattr(cfg, "label_noise_rate", 0.0))
+    if noisy_frac > 0.0 and noise_rate > 0.0 and getattr(cfg, "task", "single_label") == "single_label":
+        nrng = np.random.default_rng(cfg.seed + 2)
+        n_noisy = max(1, int(round(cfg.num_clients * noisy_frac)))
+        noisy_ids = nrng.choice(cfg.num_clients, size=n_noisy, replace=False)
+        for k in noisy_ids:
+            ck = client_labels[k]
+            m = len(ck)
+            n_flip = int(round(m * noise_rate))
+            if n_flip == 0:
+                continue
+            flip_pos = nrng.choice(m, size=n_flip, replace=False)
+            remap = {}
+            for p in flip_pos:
+                true = int(ck[p])
+                choices = [c for c in range(cfg.num_classes) if c != true]
+                remap[int(p)] = int(nrng.choice(choices))
+            client_subsets[k] = NoisyLabelDataset(client_subsets[k], remap)
+        print(f"[data] injected label noise: clients {sorted(noisy_ids.tolist())} "
+              f"@ rate {noise_rate}")
+
+    return client_subsets, test, client_labels, client_test_subsets
 
 
 def _stratified_subsample(
