@@ -1,29 +1,9 @@
+# Secrets
+kaggle.json
+.kaggle/
+# Large data caches (regenerable / downloaded)
+data_cache/
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-*.so
-
-# Virtual envs
-venv/
-.venv/
-env/
-
-# Datasets (downloaded on demand)
-data_cache/
-
-# IDE / OS
-.vscode/
-.idea/
+*.pyc
 .DS_Store
-Thumbs.db
-
-# Checkpoints / misc
-*.pt
-*.pth
-*.ckpt
-*.pkl
-
-# Run console logs (tqdm/download spam)
-logs/*.out

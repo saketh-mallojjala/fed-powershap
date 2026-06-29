@@ -1,10 +1,34 @@
 """Weighted aggregation of client state_dicts."""
 from __future__ import annotations
 
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 
 import numpy as np
 import torch
+
+
+# Substrings that mark a BatchNorm parameter / buffer. FedBN keeps these local.
+_BN_MARKERS = ("running_mean", "running_var", "num_batches_tracked")
+
+
+def bn_keys(state: Dict[str, torch.Tensor]) -> List[str]:
+    """Return the keys in a state_dict that belong to BatchNorm layers.
+
+    Catches BN running stats by name and BN affine weight/bias by matching the
+    ``<prefix>.weight`` / ``<prefix>.bias`` that share a prefix with a running
+    stat (so we don't mistake the classifier's weight for a BN weight).
+    """
+    keys = list(state.keys())
+    bn_prefixes = {
+        k.rsplit(".", 1)[0] for k in keys if k.endswith(_BN_MARKERS)
+    }
+    out = []
+    for k in keys:
+        if k.endswith(_BN_MARKERS):
+            out.append(k)
+        elif k.rsplit(".", 1)[0] in bn_prefixes and (k.endswith(".weight") or k.endswith(".bias")):
+            out.append(k)
+    return out
 
 
 def aggregate(

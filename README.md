@@ -94,6 +94,51 @@ python main.py --selection-strategy random --aggregation fedavg  # vanilla FedAv
 All flags mirror `config.py`. Use `--no-size-weighted-candidates`, etc. for
 boolean flags (argparse BooleanOptionalAction).
 
+## Methods & baselines
+
+Pick a method with `--method`; it expands into the right selection / aggregation /
+local-solver knobs (see `METHOD_PRESETS` in `config.py`). Per-knob flags still
+override a preset, so ablations work (`--method proposed --server-momentum 0`).
+
+| `--method` | Selection | Aggregation | Local solver |
+|---|---|---|---|
+| `fedavg` | random | size-weighted avg | SGD |
+| `fedprox` | random | size-weighted avg | + proximal term |
+| `scaffold` | random | control-variate | control-variate SGD |
+| `feddyn` | random | dynamic reg | + dynamic reg |
+| `fedbn` | random | avg, BN kept local | SGD |
+| `moon` | random | size-weighted avg | + model-contrastive |
+| `poc_fedavg` | Power-of-Choice | size-weighted avg | SGD |
+| `fedce` | random | contribution-weighted | SGD |
+| `proposed` | reputation-aware annealed PoC | **improved ShapFed-WA** | SGD + server momentum |
+
+The **proposed** method = reputation-weighted ShapFed-WA (convex blend with the
+size prior + bounded, non-collapsing weights) + annealed Power-of-Choice +
+server momentum (EMA form). It degrades gracefully to FedAvg as `agg_blend_lambda → 0`.
+
+### Fairness (Jain's index)
+
+`--local-test-frac` (default 0.2) holds out a seeded per-client test split. The
+global model is evaluated on each client's local test set; **Jain's fairness
+index** `J = (Σaᵢ)² / (n·Σaᵢ²)` over per-client accuracies is logged in every
+`eval` record (with `client_acc_min` / `client_acc_std`).
+
+### Full baseline sweep
+
+```bash
+# 9 methods × 4 datasets × 3 seeds. Tune cost with --image-size / --rounds / --max-train.
+python scripts/run_experiments.py --image-size 64 --rounds 50 --max-train 20000
+
+# A fast subset (proposed vs fedavg, one dataset/seed)
+python scripts/run_experiments.py --datasets octmnist --methods proposed fedavg --seeds 0 --rounds 15
+
+# Paper tables (mean±std across seeds) + figures
+python scripts/aggregate_results.py
+python scripts/plot_results.py logs/octmnist_*_seed0-*.jsonl   # overlay any set of runs
+```
+
+`run_experiments.py` skips runs whose log already exists, so it is resumable.
+
 ## Output
 
 Each run produces a JSONL log under `logs/`. One record per line:

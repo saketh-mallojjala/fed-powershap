@@ -1,4 +1,10 @@
-"""Configuration for ShapFed + Power-of-Choice federated learning."""
+"""Configuration for federated learning: the proposed method + baselines.
+
+A ``method`` preset (see ``METHOD_PRESETS``) expands into the lower-level knobs
+(selection_strategy, aggregation, local_solver, regularizer params). The CLI /
+explicit kwargs always win over a preset, so you can still ablate individual
+pieces, e.g. ``--method proposed --server-momentum 0``.
+"""
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -10,6 +16,10 @@ class Config:
     seed: int = 42
     device: str = "cuda"  # falls back to cpu if unavailable
     log_dir: str = "logs"
+
+    # Method preset: fedavg | fedprox | scaffold | feddyn | fedbn | moon |
+    # poc_fedavg | fedce | proposed. Expands to the knobs below.
+    method: str = "proposed"
 
     # Dataset
     # cifar10 | mnist | fmnist | aptos | octmnist | isic | chestxray14 | brats
@@ -35,6 +45,25 @@ class Config:
     local_lr: float = 0.01
     momentum: float = 0.9
     weight_decay: float = 5e-4
+    # Per-client local test fraction held out for fairness (Jain) evaluation.
+    # 0.0 disables per-client eval. Identical (seeded) split across all methods.
+    local_test_frac: float = 0.2
+
+    # Client data-quality heterogeneity (single-label only). A fraction
+    # `noisy_client_frac` of clients are "low quality": `label_noise_rate` of
+    # their TRAINING labels are randomly flipped (test labels stay clean). This
+    # is the regime contribution-aware aggregation is designed for — it should
+    # down-weight noisy clients where FedAvg/FedDyn trust them and degrade.
+    noisy_client_frac: float = 0.0
+    label_noise_rate: float = 0.0
+
+    # Local solver (client-side optimization variant):
+    #   sgd | fedprox | feddyn | moon | scaffold
+    local_solver: str = "sgd"
+    fedprox_mu: float = 0.01          # FedProx proximal coefficient
+    feddyn_alpha: float = 0.01        # FedDyn dynamic-regularization coefficient
+    moon_mu: float = 1.0             # MOON contrastive loss weight
+    moon_temperature: float = 0.5    # MOON contrastive temperature
 
     # Power-of-Choice selection
     #   d = candidate-pool size, m = clients trained per round (m <= d <= N)
@@ -43,15 +72,39 @@ class Config:
     selection_strategy: str = "pow_d"  # pow_d | random | full
     # If True, candidate probability is proportional to |D_k|; else uniform.
     size_weighted_candidates: bool = True
+    # Anneal Power-of-Choice toward random selection over training (proposed):
+    # exploit high-loss clients early, explore broadly late. 0.0 disables.
+    poc_anneal: float = 0.0
+    # Down-rank candidates with persistently low Shapley reputation during
+    # selection (proposed); 0.0 disables (pure highest-loss pow-d).
+    reputation_weight: float = 0.0
 
-    # ShapFed CSSV aggregation
-    aggregation: str = "shapfed_wa"    # shapfed_wa | fedavg
+    # Aggregation
+    #   fedavg | shapfed_wa | fedbn | scaffold | feddyn | fedce
+    aggregation: str = "shapfed_wa"
+    # --- shapfed_wa (proposed) knobs ---
     # Temperature to sharpen Shapley weights; 1.0 disables.
     cssv_temperature: float = 1.0
-    # Clamp negative contributions to 0 before normalization.
+    # Clamp negative contributions to 0 before normalization (legacy path).
     cssv_clamp_negative: bool = True
     # Exponential moving average for CSSV history; 0.0 disables smoothing.
     cssv_ema: float = 0.5
+    # Convex blend of Shapley weights with the FedAvg size prior:
+    #   w = (1-lambda) * size_w + lambda * shap_w
+    # Graceful degradation: lambda=0 is exactly FedAvg.
+    agg_blend_lambda: float = 0.5
+    # Anneal blend lambda from agg_blend_lambda toward agg_blend_lambda_final
+    # over rounds (lets the Shapley signal take over as it stabilizes).
+    agg_blend_lambda_final: float = 0.5
+    # Cap any single client's aggregation weight to bound effective-sample-size
+    # loss / weight collapse. 1.0 disables.
+    cssv_max_weight: float = 1.0
+    # Map cosine similarity to [0,1] via (cos+1)/2 before summing (kills the
+    # negative-clamp collapse). When True, cssv_clamp_negative is ignored.
+    cssv_unit_interval: bool = True
+
+    # Server-side momentum (FedAvgM-style); 0.0 disables.
+    server_momentum: float = 0.0
 
     # Model
     model: str = "cnn"               # cnn | resnet18 | resnet34 | resnet50
@@ -63,6 +116,74 @@ class Config:
     save_every: int = 25
 
 
+# Method presets: each maps to the lower-level knobs above. Only the fields a
+# method actually needs are set; everything else keeps the Config default.
+METHOD_PRESETS = {
+    "fedavg": dict(
+        selection_strategy="random", aggregation="fedavg", local_solver="sgd",
+        server_momentum=0.0, poc_anneal=0.0, reputation_weight=0.0,
+    ),
+    "fedprox": dict(
+        selection_strategy="random", aggregation="fedavg", local_solver="fedprox",
+        server_momentum=0.0,
+    ),
+    "scaffold": dict(
+        selection_strategy="random", aggregation="scaffold", local_solver="scaffold",
+        server_momentum=0.0,
+    ),
+    "feddyn": dict(
+        selection_strategy="random", aggregation="feddyn", local_solver="feddyn",
+        server_momentum=0.0,
+    ),
+    "fedbn": dict(
+        selection_strategy="random", aggregation="fedbn", local_solver="sgd",
+        server_momentum=0.0,
+    ),
+    "moon": dict(
+        selection_strategy="random", aggregation="fedavg", local_solver="moon",
+        server_momentum=0.0,
+    ),
+    "poc_fedavg": dict(
+        selection_strategy="pow_d", aggregation="fedavg", local_solver="sgd",
+        server_momentum=0.0,
+    ),
+    "fedce": dict(
+        selection_strategy="random", aggregation="fedce", local_solver="sgd",
+        server_momentum=0.0,
+    ),
+    # Proposed: contribution-aware dynamic FL. Builds on FedDyn's dynamic
+    # regularization (the strongest baseline optimizer) and replaces its uniform
+    # client averaging with reputation-aware Shapley (CSSV) weights, selected via
+    # Power-of-Choice. So it inherits FedDyn's accuracy and adds fairness/
+    # contribution-awareness on top, rather than competing with it.
+    "proposed": dict(
+        selection_strategy="pow_d", aggregation="shapfed_dyn", local_solver="feddyn",
+        server_momentum=0.0, poc_anneal=0.5, reputation_weight=0.5,
+        agg_blend_lambda=0.5, agg_blend_lambda_final=0.5, cssv_max_weight=0.5,
+        cssv_unit_interval=True, cssv_ema=0.5, feddyn_alpha=0.01,
+    ),
+}
+
+
+def apply_method_preset(cfg: "Config", method: str) -> "Config":
+    """Set the lower-level knobs for a named method preset (in place)."""
+    if method not in METHOD_PRESETS:
+        raise ValueError(
+            f"Unknown method '{method}'. Choices: {sorted(METHOD_PRESETS)}"
+        )
+    cfg.method = method
+    for k, v in METHOD_PRESETS[method].items():
+        setattr(cfg, k, v)
+    return cfg
+
+
 def get_config(**overrides) -> Config:
-    cfg = Config(**overrides)
+    """Build a Config. If ``method`` is given, apply its preset first, then any
+    explicit overrides (overrides win, so per-knob ablations still work)."""
+    method = overrides.pop("method", None)
+    cfg = Config()
+    if method is not None:
+        apply_method_preset(cfg, method)
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
     return cfg

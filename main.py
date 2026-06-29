@@ -17,7 +17,7 @@ from dataclasses import asdict, fields
 import torch
 from tqdm import tqdm
 
-from config import Config, get_config
+from config import Config, apply_method_preset, get_config
 from data import MEDMNIST_REGISTRY, build_federated_datasets
 from federated import Client, Server
 from models import build_model
@@ -59,27 +59,35 @@ def apply_dataset_defaults(cfg: Config) -> Config:
     elif cfg.dataset == "brats":
         cfg.num_classes = 2
         cfg.task = "single_label"
+    elif cfg.dataset == "aptos":
+        cfg.num_classes = 5  # DR grades 0-4 (ordinal); QWK is the headline metric
+        cfg.task = "single_label"
     return cfg
 
 
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
-    cfg = apply_overrides(get_config(), args)
+    cfg = get_config()
+    # Apply the method preset first (CLI default or chosen), then let any
+    # explicit CLI flags override individual knobs (for ablations).
+    cfg = apply_method_preset(cfg, args.method or cfg.method)
+    cfg = apply_overrides(cfg, args)
     cfg = apply_dataset_defaults(cfg)
 
     if cfg.device == "cuda" and not torch.cuda.is_available():
         cfg.device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"[cfg] device={cfg.device} dataset={cfg.dataset} N={cfg.num_clients} "
-          f"m={cfg.active_size_m} d={cfg.candidate_size_d} "
-          f"selection={cfg.selection_strategy} agg={cfg.aggregation}")
+          f"method={cfg.method} m={cfg.active_size_m} d={cfg.candidate_size_d} "
+          f"selection={cfg.selection_strategy} agg={cfg.aggregation} "
+          f"solver={cfg.local_solver}")
 
     set_seed(cfg.seed)
 
-    # Data + clients.
-    subsets, test_set, client_labels = build_federated_datasets(cfg)
+    # Data + clients (per-client local test split drives the fairness metric).
+    subsets, test_set, client_labels, test_subsets = build_federated_datasets(cfg)
     clients = [
-        Client(i, subsets[i], client_labels[i], cfg)
+        Client(i, subsets[i], client_labels[i], cfg, test_subset=test_subsets[i])
         for i in range(cfg.num_clients)
     ]
     sizes = [c.size for c in clients]
@@ -106,6 +114,8 @@ def main():
 
             if (r + 1) % cfg.eval_every == 0 or r == cfg.num_rounds - 1:
                 metrics = server.evaluate()
+                fairness = server.evaluate_per_client()  # {} if no local test sets
+                metrics.update(fairness)
                 best_acc = max(best_acc, metrics["acc"])
                 logger.log({"type": "eval", "round": r, **metrics})
                 postfix = {
@@ -117,6 +127,8 @@ def main():
                     postfix["qwk"] = f"{metrics['qwk']:.3f}"
                 if "auc" in metrics:
                     postfix["auc"] = f"{metrics['auc']:.3f}"
+                if "jain" in metrics:
+                    postfix["jain"] = f"{metrics['jain']:.3f}"
                 pbar.set_postfix(postfix)
 
         print(f"[done] best acc = {best_acc:.4f}; log: {logger.path}")

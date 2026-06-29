@@ -43,9 +43,9 @@ def run():
     )
     set_seed(cfg.seed)
     print(f"[smoke] device={cfg.device}")
-    subsets, test_set, labels = build_federated_datasets(cfg)
+    subsets, test_set, labels, test_subsets = build_federated_datasets(cfg)
     print(f"[smoke] train clients: sizes={[len(s) for s in subsets]} | test={len(test_set)}")
-    clients = [Client(i, subsets[i], labels[i], cfg) for i in range(cfg.num_clients)]
+    clients = [Client(i, subsets[i], labels[i], cfg, test_subset=test_subsets[i]) for i in range(cfg.num_clients)]
     server = Server(cfg, clients, test_set, lambda: build_model(cfg))
     for r in range(cfg.num_rounds):
         info = server.run_round(r)

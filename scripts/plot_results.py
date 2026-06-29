@@ -25,7 +25,8 @@ from matplotlib.colors import LinearSegmentedColormap
 
 # ---------- style ----------
 
-PALETTE = ["#2E86AB", "#E63946", "#06A77D", "#F4A261", "#8E44AD", "#2A9D8F"]
+PALETTE = ["#2E86AB", "#E63946", "#06A77D", "#F4A261", "#8E44AD", "#2A9D8F",
+           "#D62828", "#457B9D", "#E9C46A", "#1b1f3b", "#9C6644"]
 CSSV_CMAP = LinearSegmentedColormap.from_list(
     "cssv", ["#1b1f3b", "#2E86AB", "#f1faee", "#F4A261", "#E63946"]
 )
@@ -111,7 +112,16 @@ def load_run(path: str) -> Run:
                 rounds.append(r)
             elif t == "eval":
                 evals.append(r)
-    label = f"{cfg.get('selection_strategy','?')}+{cfg.get('aggregation','?')}"
+    _METHOD_LABEL = {
+        "fedavg": "FedAvg", "fedprox": "FedProx", "scaffold": "SCAFFOLD",
+        "feddyn": "FedDyn", "fedbn": "FedBN", "moon": "MOON",
+        "poc_fedavg": "PoC-FedAvg", "fedce": "FedCE", "proposed": "Proposed",
+    }
+    method = cfg.get("method")
+    if method in _METHOD_LABEL:
+        label = _METHOD_LABEL[method]
+    else:
+        label = f"{cfg.get('selection_strategy','?')}+{cfg.get('aggregation','?')}"
     return Run(label=label, cfg=cfg, sizes=sizes, class_hists=hists,
                rounds=rounds, evals=evals)
 
@@ -229,6 +239,55 @@ def plot_auc(runs: List[Run], out: str):
     ax.set_title("Macro AUC over rounds (multi-label metric)")
     ax.set_ylim(0.4, 1.0)
     ax.legend(loc="lower right")
+    fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
+
+
+def plot_jain(runs: List[Run], out: str):
+    """Jain's fairness index over rounds (per-client accuracy uniformity)."""
+    any_jain = any("jain" in e for r in runs for e in r.evals)
+    if not any_jain:
+        return
+    fig, ax = plt.subplots(figsize=(8, 5))
+    for i, run in enumerate(runs):
+        evals = [e for e in run.evals if "jain" in e]
+        if not evals:
+            continue
+        x = [e["round"] for e in evals]
+        y = [e["jain"] for e in evals]
+        color = PALETTE[i % len(PALETTE)]
+        ax.plot(x, y, color=color, alpha=0.25, lw=1.2)
+        ax.plot(x, _smooth(y), color=color, lw=2.3, label=run.label)
+    ax.set_xlabel("Communication round")
+    ax.set_ylabel("Jain's fairness index")
+    ax.set_title("Fairness over rounds (1.0 = perfectly fair across clients)")
+    ax.set_ylim(0, 1.02)
+    ax.legend(loc="lower right")
+    fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
+
+
+def plot_fairness_bar(runs: List[Run], out: str):
+    """Final-round Jain index per method (bar chart for the comparison set)."""
+    items = []
+    for i, run in enumerate(runs):
+        evals = [e for e in run.evals if "jain" in e]
+        if evals:
+            items.append((run.label, evals[-1]["jain"], i))
+    if not items:
+        return
+    fig, ax = plt.subplots(figsize=(max(7, 1.0 * len(items)), 5))
+    labels = [t[0] for t in items]
+    vals = [t[1] for t in items]
+    colors = [PALETTE[t[2] % len(PALETTE)] for t in items]
+    bars = ax.bar(range(len(items)), vals, color=colors,
+                  edgecolor="#333", linewidth=0.7)
+    for b, v in zip(bars, vals):
+        ax.text(b.get_x() + b.get_width() / 2, v + 0.005, f"{v:.3f}",
+                ha="center", fontsize=9, color="#222", fontweight="bold")
+    ax.set_xticks(range(len(items)))
+    ax.set_xticklabels(labels, rotation=20)
+    ax.set_ylabel("Jain's fairness index (final round)")
+    ax.set_title("Client fairness by method")
+    ax.set_ylim(min(vals) - 0.05 if vals else 0, 1.02)
     fig.savefig(out + ".png"); fig.savefig(out + ".pdf"); plt.close(fig)
 
 
@@ -501,6 +560,8 @@ def main(argv):
     plot_loss(runs, os.path.join(outdir, "02_loss"))
     plot_qwk(runs, os.path.join(outdir, "02b_qwk"))
     plot_auc(runs, os.path.join(outdir, "02c_auc"))
+    plot_jain(runs, os.path.join(outdir, "02d_jain"))
+    plot_fairness_bar(runs, os.path.join(outdir, "02e_fairness_bar"))
 
     # Per-run plots.
     for run in runs:

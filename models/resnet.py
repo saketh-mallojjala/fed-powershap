@@ -41,5 +41,9 @@ class ResNetClassifier(nn.Module):
         self.backbone = backbone
         self.classifier = nn.Linear(in_features, num_classes)
 
+    def extract_features(self, x):
+        """Backbone embedding (input to ``classifier``); used by MOON."""
+        return self.backbone(x)
+
     def forward(self, x):
-        return self.classifier(self.backbone(x))
+        return self.classifier(self.extract_features(x))
