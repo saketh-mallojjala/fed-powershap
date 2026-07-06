@@ -81,9 +81,13 @@ class Client:
         global_state: Dict[str, torch.Tensor],
         model_builder,
         server_control: Optional[Dict[str, torch.Tensor]] = None,
+        lr: Optional[float] = None,
     ) -> Tuple[Dict[str, torch.Tensor], Dict]:
-        """Run the configured local solver. Returns (new_state_dict, aux)."""
+        """Run the configured local solver. Returns (new_state_dict, aux).
+
+        ``lr`` overrides ``cfg.local_lr`` for this round (server LR schedule)."""
         cfg = self.cfg
+        self._cur_lr = float(lr) if lr is not None else float(cfg.local_lr)
         solver = getattr(cfg, "local_solver", "sgd")
         model = model_builder().to(cfg.device)
         model.load_state_dict(global_state)
@@ -105,7 +109,7 @@ class Client:
     def _optimizer(self, model):
         cfg = self.cfg
         return torch.optim.SGD(
-            model.parameters(), lr=cfg.local_lr,
+            model.parameters(), lr=getattr(self, "_cur_lr", cfg.local_lr),
             momentum=cfg.momentum, weight_decay=cfg.weight_decay,
         )
 
@@ -222,8 +226,9 @@ class Client:
         # SCAFFOLD corrects .grad directly, so it assumes plain SGD: momentum
         # would entangle the control correction with the momentum buffer and
         # break the variate accounting (causing divergence). Use momentum=0.
+        lr = getattr(self, "_cur_lr", cfg.local_lr)
         optimizer = torch.optim.SGD(
-            model.parameters(), lr=cfg.local_lr, momentum=0.0,
+            model.parameters(), lr=lr, momentum=0.0,
             weight_decay=cfg.weight_decay,
         )
         named = dict(model.named_parameters())
@@ -254,7 +259,7 @@ class Client:
                 steps += 1
 
         # Update control variate (option II): c_i^+ = c_i - c + (w_g - w)/(K*lr)
-        coef = 1.0 / max(steps * cfg.local_lr, 1e-12)
+        coef = 1.0 / max(steps * lr, 1e-12)
         delta_c: Dict[str, torch.Tensor] = {}
         with torch.no_grad():
             for n, p in model.named_parameters():

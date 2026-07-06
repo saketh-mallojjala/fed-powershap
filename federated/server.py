@@ -112,6 +112,18 @@ class Server:
             outcome.active = cand[order[:m]].tolist()
         return outcome
 
+    def _round_lr(self, round_idx: int) -> float:
+        """Effective local LR for this round. Cosine decay curbs the late-round
+        divergence that plagues constant-LR runs under non-IID / noisy clients."""
+        cfg = self.cfg
+        base = float(cfg.local_lr)
+        if getattr(cfg, "lr_schedule", "none") != "cosine":
+            return base
+        import math
+        t = round_idx / max(cfg.num_rounds - 1, 1)
+        frac = float(getattr(cfg, "lr_min_frac", 0.1))
+        return base * (frac + (1.0 - frac) * 0.5 * (1.0 + math.cos(math.pi * t)))
+
     # ---------- core round ----------
 
     def run_round(self, round_idx: int) -> Dict:
@@ -134,6 +146,7 @@ class Server:
             st, aux = self.clients[cid].local_train(
                 sent_state, self.model_builder,
                 server_control=self.scaffold_c if cfg.aggregation == "scaffold" else None,
+                lr=self._round_lr(round_idx),
             )
             client_states.append(st)
             auxes.append(aux)
@@ -194,6 +207,8 @@ class Server:
             client_states=client_states,
             classifier_weight_key=CLASSIFIER_WEIGHT_KEY,
             num_classes=cfg.num_classes,
+            reference=getattr(cfg, "cssv_reference", "mean"),
+            trim_frac=getattr(cfg, "cssv_trim_frac", 0.2),
         )
         if cfg.cssv_unit_interval:
             per_client_score = ((cssv + 1.0) / 2.0).sum(axis=1)
@@ -263,16 +278,26 @@ class Server:
                 k: torch.zeros_like(v.float())
                 for k, v in global_state.items() if torch.is_floating_point(v)
             }
+        S = len(client_states)
+        weight_consistent = bool(getattr(cfg, "feddyn_weight_consistent", True))
         out: Dict[str, torch.Tensor] = {}
         for k, ref in avg.items():
             if not torch.is_floating_point(ref) or _is_running_stat(k):
                 out[k] = ref.clone()  # BN running stats: plain average, no h term
                 continue
-            sum_delta = torch.zeros_like(ref, dtype=torch.float32)
             g = global_state[k].float()
-            for st in client_states:
-                sum_delta += st[k].float() - g
-            self.feddyn_h[k] = self.feddyn_h[k] - (alpha / N) * sum_delta
+            if weight_consistent:
+                # Track the drift of exactly the weighted average that forms the
+                # model: Σ_k w_k (θ_k − g) = avg − g, scaled by participation S/N.
+                # With uniform w this reduces to (1/N)Σ(θ_k − g), i.e. the legacy
+                # update — so plain feddyn is unchanged; only shapfed_dyn differs.
+                weighted_delta = avg[k].float() - g
+                self.feddyn_h[k] = self.feddyn_h[k] - alpha * (S / N) * weighted_delta
+            else:
+                sum_delta = torch.zeros_like(ref, dtype=torch.float32)
+                for st in client_states:
+                    sum_delta += st[k].float() - g
+                self.feddyn_h[k] = self.feddyn_h[k] - (alpha / N) * sum_delta
             out[k] = (avg[k].float() - (1.0 / alpha) * self.feddyn_h[k]).to(ref.dtype)
         return out
 

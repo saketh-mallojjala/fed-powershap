@@ -102,6 +102,28 @@ class Config:
     # Map cosine similarity to [0,1] via (cos+1)/2 before summing (kills the
     # negative-clamp collapse). When True, cssv_clamp_negative is ignored.
     cssv_unit_interval: bool = True
+    # Reference used as the CSSV consensus direction each client is scored
+    # against: "mean" (original ShapFed) | "median" | "trimmed". Under label
+    # noise the mean is polluted by corrupted clients, so a noisy client can
+    # still look "aligned" and keep weight; a robust reference (coordinate-wise
+    # median / trimmed mean) is far from the corrupted updates, so noisy clients
+    # score low and get down-weighted. This is the key lever for the noisy regime.
+    cssv_reference: str = "mean"
+    # Fraction trimmed from each tail when cssv_reference="trimmed".
+    cssv_trim_frac: float = 0.2
+
+    # Principled FedDyn+ShapFed: make the FedDyn drift-correction (h) track the
+    # SAME Shapley-weighted average that forms the model, instead of the uniform
+    # client sum. When weights are uniform (plain feddyn) this is identical to
+    # the original; it only changes shapfed_dyn, where it stops FedDyn's
+    # correction from fighting the contribution reweighting. False = legacy.
+    feddyn_weight_consistent: bool = True
+
+    # Round-wise local LR schedule to curb late-round divergence under non-IID /
+    # noisy clients (constant LR collapses late; see RESULTS_ANALYSIS). "none"
+    # keeps the constant LR; "cosine" decays local_lr -> local_lr*lr_min_frac.
+    lr_schedule: str = "none"          # none | cosine
+    lr_min_frac: float = 0.1
 
     # Server-side momentum (FedAvgM-style); 0.0 disables.
     server_momentum: float = 0.0
@@ -151,16 +173,23 @@ METHOD_PRESETS = {
         selection_strategy="random", aggregation="fedce", local_solver="sgd",
         server_momentum=0.0,
     ),
-    # Proposed: contribution-aware dynamic FL. Builds on FedDyn's dynamic
-    # regularization (the strongest baseline optimizer) and replaces its uniform
-    # client averaging with reputation-aware Shapley (CSSV) weights, selected via
-    # Power-of-Choice. So it inherits FedDyn's accuracy and adds fairness/
-    # contribution-awareness on top, rather than competing with it.
+    # Proposed: robust contribution-aware dynamic FL, built for the unreliable-
+    # client regime. FedDyn dynamic regularization (strongest baseline optimizer)
+    # + Shapley/CSSV aggregation weights that are (a) scored against a robust
+    # MEDIAN consensus so label-noise clients score low and get down-weighted,
+    # and (b) fed into a weight-CONSISTENT FedDyn server update so the drift
+    # correction no longer fights the reweighting. Power-of-Choice is dropped
+    # (it selects the highest-loss = corrupted clients under noise); plain random
+    # selection with a strong Shapley blend (lambda=0.85). Recover the old
+    # variant for ablation via CLI: --selection-strategy pow_d --poc-anneal 0.5
+    # --reputation-weight 0.5 --agg-blend-lambda 0.5 --cssv-reference mean
+    # --no-feddyn-weight-consistent.
     "proposed": dict(
-        selection_strategy="pow_d", aggregation="shapfed_dyn", local_solver="feddyn",
-        server_momentum=0.0, poc_anneal=0.5, reputation_weight=0.5,
-        agg_blend_lambda=0.5, agg_blend_lambda_final=0.5, cssv_max_weight=0.5,
+        selection_strategy="random", aggregation="shapfed_dyn", local_solver="feddyn",
+        server_momentum=0.0, poc_anneal=0.0, reputation_weight=0.0,
+        agg_blend_lambda=0.85, agg_blend_lambda_final=0.85, cssv_max_weight=0.5,
         cssv_unit_interval=True, cssv_ema=0.5, feddyn_alpha=0.01,
+        cssv_reference="median", cssv_trim_frac=0.2, feddyn_weight_consistent=True,
     ),
 }
 

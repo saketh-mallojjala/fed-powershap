@@ -34,19 +34,44 @@ def _classifier_weight_delta(
     return c - g
 
 
+def _consensus_delta(stacked: torch.Tensor, reference: str, trim_frac: float) -> torch.Tensor:
+    """Reduce the (K, C, F) stack of client classifier deltas to a single
+    (C, F) consensus direction each client is then scored against.
+
+    "mean"    - original ShapFed (sensitive to corrupted clients).
+    "median"  - coordinate-wise median (robust; a few noisy clients can't move it).
+    "trimmed" - drop the top/bottom ``trim_frac`` of values per coordinate, mean
+                the rest (robust, smoother than median for larger K).
+    """
+    if reference == "median":
+        return stacked.median(dim=0).values
+    if reference == "trimmed":
+        K = stacked.shape[0]
+        k = int(K * float(trim_frac))
+        if 2 * k >= K:                              # too few clients to trim → median
+            return stacked.median(dim=0).values
+        sorted_s, _ = torch.sort(stacked, dim=0)    # sort clients per coordinate
+        return sorted_s[k:K - k].mean(dim=0)
+    return stacked.mean(dim=0)                       # "mean" (default)
+
+
 def compute_cssv(
     global_state: Dict[str, torch.Tensor],
     client_states: Sequence[Dict[str, torch.Tensor]],
     classifier_weight_key: str,
     num_classes: int,
+    reference: str = "mean",
+    trim_frac: float = 0.2,
     eps: float = 1e-12,
 ) -> np.ndarray:
     """Compute a (num_selected, num_classes) matrix of class-specific
     Shapley-like contributions.
 
     For client k and class c:
-        φ_{k,c} = cos_sim(Δw_k^{(c)}, Δw_agg^{(c)})
-    where Δw_agg = mean over selected clients of their classifier deltas.
+        φ_{k,c} = cos_sim(Δw_k^{(c)}, Δw_ref^{(c)})
+    where Δw_ref is the consensus direction over selected clients — the mean
+    (original ShapFed) or a robust median / trimmed mean (``reference``), which
+    is what lets the signal down-weight label-noise clients.
 
     Returning per-class values lets callers downstream apply class weights
     (e.g. inversely proportional to class frequency) if they want.
@@ -59,7 +84,7 @@ def compute_cssv(
         for cs in client_states
     ]
     stacked = torch.stack(deltas, dim=0)          # (K, C, F)
-    agg = stacked.mean(dim=0)                      # (C, F)
+    agg = _consensus_delta(stacked, reference, trim_frac)   # (C, F)
 
     # Cosine sim along feature dim, independently per class.
     num = (stacked * agg.unsqueeze(0)).sum(dim=-1)            # (K, C)
