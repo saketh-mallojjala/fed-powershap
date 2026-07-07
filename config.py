@@ -102,6 +102,16 @@ class Config:
     # Map cosine similarity to [0,1] via (cos+1)/2 before summing (kills the
     # negative-clamp collapse). When True, cssv_clamp_negative is ignored.
     cssv_unit_interval: bool = True
+    # Contribution/quality signal driving aggregation weights:
+    #   "cssv" - ShapFed cosine of the classifier update vs. consensus (original).
+    #   "loss" - down-weight by the global model's loss on the client's own data.
+    #            Corrupted clients disagree with the clean consensus -> high loss
+    #            -> low weight. This RELIABLY separates label-noise clients, which
+    #            the cosine signal does not under partial participation.
+    contrib_signal: str = "cssv"   # cssv | loss
+    # Sharpness of the loss->weight map: w_shap ∝ exp(-beta * (loss - min_loss)).
+    loss_weight_beta: float = 4.0
+
     # Reference used as the CSSV consensus direction each client is scored
     # against: "mean" (original ShapFed) | "median" | "trimmed". Under label
     # noise the mean is polluted by corrupted clients, so a noisy client can
@@ -189,7 +199,11 @@ METHOD_PRESETS = {
         server_momentum=0.0, poc_anneal=0.0, reputation_weight=0.0,
         agg_blend_lambda=0.85, agg_blend_lambda_final=0.85, cssv_max_weight=0.5,
         cssv_unit_interval=True, cssv_ema=0.5, feddyn_alpha=0.01,
-        cssv_reference="median", cssv_trim_frac=0.2, feddyn_weight_consistent=True,
+        feddyn_weight_consistent=True,
+        # Reliable quality signal: down-weight clients the clean consensus fits
+        # poorly (label-noise clients). The cosine/CSSV signal is anti-
+        # discriminative under partial participation; loss separates cleanly.
+        contrib_signal="loss", loss_weight_beta=4.0,
     ),
 }
 

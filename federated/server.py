@@ -22,7 +22,7 @@ from federated.aggregation import _BN_MARKERS, aggregate, bn_keys
 from federated.client import Client
 from federated.contribution import fedce_weights
 from federated.selection import SelectionOutcome, select_clients
-from federated.shapley import compute_cssv, cssv_to_weights
+from federated.shapley import _cap_weights, compute_cssv, cssv_to_weights
 from models import CLASSIFIER_LAYER_NAME
 
 
@@ -160,10 +160,14 @@ class Server:
                 global_state, client_states, active_sizes, outcome.active, round_idx
             )
         elif cfg.aggregation == "shapfed_dyn":
-            # Proposed: contribution-aware (Shapley-weighted) FedDyn aggregation.
-            weights, cssv = self._shapfed_weights(
-                global_state, client_states, active_sizes, outcome.active, round_idx
-            )
+            # Proposed: contribution-aware FedDyn aggregation. The quality signal
+            # is either ShapFed CSSV or (reliable under noise) the loss detector.
+            if getattr(cfg, "contrib_signal", "cssv") == "loss":
+                weights = self._loss_weights(active_sizes, outcome.active, round_idx)
+            else:
+                weights, cssv = self._shapfed_weights(
+                    global_state, client_states, active_sizes, outcome.active, round_idx
+                )
             new_state = self._agg_feddyn(global_state, client_states, weights=weights)
         elif cfg.aggregation == "fedce":
             weights = fedce_weights(global_state, client_states, active_sizes)
@@ -193,6 +197,7 @@ class Server:
             "active": outcome.active,
             "weights": np.asarray(weights).tolist(),
             "cssv": cssv.tolist() if cssv is not None else None,
+            "contrib_losses": getattr(self, "_last_losses", None),
         }
 
     # ---------- aggregation helpers ----------
@@ -243,6 +248,37 @@ class Server:
             + (1 - cfg.cssv_ema) * per_client_score
         )
         return weights, cssv
+
+    def _loss_weights(self, active_sizes, active, round_idx):
+        """Reliable label-noise detector: weight each active client by the global
+        model's loss on its OWN data. Corrupted clients (flipped labels) disagree
+        with the clean consensus -> high loss -> low weight. Blended with the size
+        prior and capped, exactly like the CSSV path, and the per-client loss
+        feeds the same reputation EMA (as a negative score)."""
+        cfg = self.cfg
+        losses = np.array([
+            self.clients[cid].probe_loss(self.global_model) for cid in active
+        ], dtype=np.float64)
+        self._last_losses = losses.tolist()
+
+        # exp(-beta * (loss - min_loss)) -> high-loss (noisy) clients get ~0.
+        z = -float(cfg.loss_weight_beta) * (losses - losses.min())
+        shap_w = np.exp(z)
+        shap_w = shap_w / shap_w.sum() if shap_w.sum() > 0 else np.ones_like(shap_w) / len(shap_w)
+
+        size_w = active_sizes / active_sizes.sum()
+        t = round_idx / max(cfg.num_rounds - 1, 1)
+        lam = (1 - t) * cfg.agg_blend_lambda + t * cfg.agg_blend_lambda_final
+        w = (1.0 - lam) * size_w + lam * shap_w
+        w = w / w.sum()
+        w = _cap_weights(w, cfg.cssv_max_weight)
+
+        # reputation EMA on the (negated, normalized) loss, for reputation-aware selection
+        rep = 1.0 - _minmax(losses)
+        if self.cssv_ema is None:
+            self.cssv_ema = np.zeros(len(self.clients))
+        self.cssv_ema[active] = cfg.cssv_ema * self.cssv_ema[active] + (1 - cfg.cssv_ema) * rep
+        return w
 
     def _agg_shapfed(self, global_state, client_states, active_sizes, active, round_idx):
         weights, cssv = self._shapfed_weights(
