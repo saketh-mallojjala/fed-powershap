@@ -22,7 +22,7 @@ from federated.aggregation import _BN_MARKERS, aggregate, bn_keys
 from federated.client import Client
 from federated.contribution import fedce_weights
 from federated.selection import SelectionOutcome, select_clients
-from federated.shapley import compute_cssv, cssv_to_weights
+from federated.shapley import _cap_weights, compute_cssv, cssv_to_weights
 from models import CLASSIFIER_LAYER_NAME
 
 
@@ -112,6 +112,18 @@ class Server:
             outcome.active = cand[order[:m]].tolist()
         return outcome
 
+    def _round_lr(self, round_idx: int) -> float:
+        """Effective local LR for this round. Cosine decay curbs the late-round
+        divergence that plagues constant-LR runs under non-IID / noisy clients."""
+        cfg = self.cfg
+        base = float(cfg.local_lr)
+        if getattr(cfg, "lr_schedule", "none") != "cosine":
+            return base
+        import math
+        t = round_idx / max(cfg.num_rounds - 1, 1)
+        frac = float(getattr(cfg, "lr_min_frac", 0.1))
+        return base * (frac + (1.0 - frac) * 0.5 * (1.0 + math.cos(math.pi * t)))
+
     # ---------- core round ----------
 
     def run_round(self, round_idx: int) -> Dict:
@@ -134,6 +146,7 @@ class Server:
             st, aux = self.clients[cid].local_train(
                 sent_state, self.model_builder,
                 server_control=self.scaffold_c if cfg.aggregation == "scaffold" else None,
+                lr=self._round_lr(round_idx),
             )
             client_states.append(st)
             auxes.append(aux)
@@ -147,10 +160,14 @@ class Server:
                 global_state, client_states, active_sizes, outcome.active, round_idx
             )
         elif cfg.aggregation == "shapfed_dyn":
-            # Proposed: contribution-aware (Shapley-weighted) FedDyn aggregation.
-            weights, cssv = self._shapfed_weights(
-                global_state, client_states, active_sizes, outcome.active, round_idx
-            )
+            # Proposed: contribution-aware FedDyn aggregation. The quality signal
+            # is either ShapFed CSSV or (reliable under noise) the loss detector.
+            if getattr(cfg, "contrib_signal", "cssv") == "loss":
+                weights = self._loss_weights(active_sizes, outcome.active, round_idx)
+            else:
+                weights, cssv = self._shapfed_weights(
+                    global_state, client_states, active_sizes, outcome.active, round_idx
+                )
             new_state = self._agg_feddyn(global_state, client_states, weights=weights)
         elif cfg.aggregation == "fedce":
             weights = fedce_weights(global_state, client_states, active_sizes)
@@ -180,6 +197,7 @@ class Server:
             "active": outcome.active,
             "weights": np.asarray(weights).tolist(),
             "cssv": cssv.tolist() if cssv is not None else None,
+            "contrib_losses": getattr(self, "_last_losses", None),
         }
 
     # ---------- aggregation helpers ----------
@@ -194,6 +212,8 @@ class Server:
             client_states=client_states,
             classifier_weight_key=CLASSIFIER_WEIGHT_KEY,
             num_classes=cfg.num_classes,
+            reference=getattr(cfg, "cssv_reference", "mean"),
+            trim_frac=getattr(cfg, "cssv_trim_frac", 0.2),
         )
         if cfg.cssv_unit_interval:
             per_client_score = ((cssv + 1.0) / 2.0).sum(axis=1)
@@ -229,6 +249,37 @@ class Server:
         )
         return weights, cssv
 
+    def _loss_weights(self, active_sizes, active, round_idx):
+        """Reliable label-noise detector: weight each active client by the global
+        model's loss on its OWN data. Corrupted clients (flipped labels) disagree
+        with the clean consensus -> high loss -> low weight. Blended with the size
+        prior and capped, exactly like the CSSV path, and the per-client loss
+        feeds the same reputation EMA (as a negative score)."""
+        cfg = self.cfg
+        losses = np.array([
+            self.clients[cid].probe_loss(self.global_model) for cid in active
+        ], dtype=np.float64)
+        self._last_losses = losses.tolist()
+
+        # exp(-beta * (loss - min_loss)) -> high-loss (noisy) clients get ~0.
+        z = -float(cfg.loss_weight_beta) * (losses - losses.min())
+        shap_w = np.exp(z)
+        shap_w = shap_w / shap_w.sum() if shap_w.sum() > 0 else np.ones_like(shap_w) / len(shap_w)
+
+        size_w = active_sizes / active_sizes.sum()
+        t = round_idx / max(cfg.num_rounds - 1, 1)
+        lam = (1 - t) * cfg.agg_blend_lambda + t * cfg.agg_blend_lambda_final
+        w = (1.0 - lam) * size_w + lam * shap_w
+        w = w / w.sum()
+        w = _cap_weights(w, cfg.cssv_max_weight)
+
+        # reputation EMA on the (negated, normalized) loss, for reputation-aware selection
+        rep = 1.0 - _minmax(losses)
+        if self.cssv_ema is None:
+            self.cssv_ema = np.zeros(len(self.clients))
+        self.cssv_ema[active] = cfg.cssv_ema * self.cssv_ema[active] + (1 - cfg.cssv_ema) * rep
+        return w
+
     def _agg_shapfed(self, global_state, client_states, active_sizes, active, round_idx):
         weights, cssv = self._shapfed_weights(
             global_state, client_states, active_sizes, active, round_idx
@@ -263,16 +314,26 @@ class Server:
                 k: torch.zeros_like(v.float())
                 for k, v in global_state.items() if torch.is_floating_point(v)
             }
+        S = len(client_states)
+        weight_consistent = bool(getattr(cfg, "feddyn_weight_consistent", True))
         out: Dict[str, torch.Tensor] = {}
         for k, ref in avg.items():
             if not torch.is_floating_point(ref) or _is_running_stat(k):
                 out[k] = ref.clone()  # BN running stats: plain average, no h term
                 continue
-            sum_delta = torch.zeros_like(ref, dtype=torch.float32)
             g = global_state[k].float()
-            for st in client_states:
-                sum_delta += st[k].float() - g
-            self.feddyn_h[k] = self.feddyn_h[k] - (alpha / N) * sum_delta
+            if weight_consistent:
+                # Track the drift of exactly the weighted average that forms the
+                # model: Σ_k w_k (θ_k − g) = avg − g, scaled by participation S/N.
+                # With uniform w this reduces to (1/N)Σ(θ_k − g), i.e. the legacy
+                # update — so plain feddyn is unchanged; only shapfed_dyn differs.
+                weighted_delta = avg[k].float() - g
+                self.feddyn_h[k] = self.feddyn_h[k] - alpha * (S / N) * weighted_delta
+            else:
+                sum_delta = torch.zeros_like(ref, dtype=torch.float32)
+                for st in client_states:
+                    sum_delta += st[k].float() - g
+                self.feddyn_h[k] = self.feddyn_h[k] - (alpha / N) * sum_delta
             out[k] = (avg[k].float() - (1.0 / alpha) * self.feddyn_h[k]).to(ref.dtype)
         return out
 
