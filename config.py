@@ -197,13 +197,16 @@ METHOD_PRESETS = {
     "proposed": dict(
         selection_strategy="random", aggregation="shapfed_dyn", local_solver="feddyn",
         server_momentum=0.0, poc_anneal=0.0, reputation_weight=0.0,
-        agg_blend_lambda=0.85, agg_blend_lambda_final=0.85, cssv_max_weight=0.5,
+        # Moderate blend + tight cap so no single client can dominate: aggressive
+        # loss-weighting collapses onto 1-2 clients and destabilizes the global
+        # model. beta=1.5 down-weights noisy clients without zeroing the rest.
+        agg_blend_lambda=0.5, agg_blend_lambda_final=0.5, cssv_max_weight=0.30,
         cssv_unit_interval=True, cssv_ema=0.5, feddyn_alpha=0.01,
         feddyn_weight_consistent=True,
         # Reliable quality signal: down-weight clients the clean consensus fits
         # poorly (label-noise clients). The cosine/CSSV signal is anti-
         # discriminative under partial participation; loss separates cleanly.
-        contrib_signal="loss", loss_weight_beta=4.0,
+        contrib_signal="loss", loss_weight_beta=1.5,
     ),
 }
 
