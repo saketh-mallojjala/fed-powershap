@@ -89,6 +89,30 @@ method (below).
 
 **Configuration:** β=1.5, blend λ=0.5, weight cap 0.30 (see §6 for why moderate).
 
+**Architecture (one communication round).** See
+`figures/paper/architecture.png` — the standard steps (global broadcast → random
+selection → local FedDyn training) feed the **novel robustness block**: the
+loss-based client-quality detector → loss-based weights → weight-consistent
+FedDyn aggregation → updated global model, repeated for 40 rounds.
+
+```
+      Global model wₜ  ──►  Random selection (5 of 10)  ──►  Local FedDyn training
+                                                                     │  client updates wₖ
+                                                                     ▼
+   ┌──────────────────────── NOVEL: robustness mechanism ────────────────────────┐
+   │  Client-quality detector:  lossₖ = L(wₜ ; client k's data)   (noisy ⇒ high)  │
+   │                    │                                                          │
+   │                    ▼                                                          │
+   │  Loss-based weights: wₖ ∝ exp(−β·lossₖ), blend size prior, cap 0.30           │
+   │                    │            (high loss ⇒ low weight ⇒ down-weighted)      │
+   │                    ▼                                                          │
+   │  Weight-consistent FedDyn aggregation  ──►  wₜ₊₁                              │
+   └──────────────────────────────────────────────────────────────────────────────┘
+                                     │  (cosine LR decay)
+                                     ▼
+                        Updated global model wₜ₊₁  ──►  repeat
+```
+
 ---
 
 ## 5. A negative result: the Shapley/cosine signal does not work here
