@@ -153,21 +153,25 @@ last-round 0.39 → 0.57, no collapse).
 
 ---
 
-## 7. Results (3 seeds, mean ± std, last round)
+## 7. Results (mean ± std, last round)
 
-### Table 1 — Clean data (0% noise)
+### Table 1 — Clean data (0% noise), 5 seeds
 | Method | Accuracy | Jain index | Worst-client acc |
 |---|---|---|---|
-| FedAvg | 0.645 ± 0.065 | 0.935 | 0.342 |
-| FedDyn | 0.667 ± 0.031 | **0.965** | **0.481** |
-| **Proposed** | **0.695 ± 0.030** | 0.958 | 0.452 |
+| FedAvg | 0.636 ± 0.057 | 0.949 | 0.427 |
+| FedDyn | 0.688 ± 0.035 | **0.976** | **0.594** |
+| **Proposed** | **0.708 ± 0.029** | 0.969 | 0.536 |
 
-### Table 2 — 40% noisy clients (60% label flip)
+### Table 2 — 40% noisy clients (60% label flip), 3 matched seeds
 | Method | Accuracy | Jain index | Worst-client acc |
 |---|---|---|---|
 | FedAvg | 0.448 ± 0.055 | 0.864 | 0.119 |
 | FedDyn | **0.530 ± 0.086** | **0.906** | **0.232** |
 | **Proposed** | 0.518 ± 0.042 | 0.904 | 0.215 |
+
+_Clean uses 5 seeds (all methods complete); 40% uses the 3 seeds complete across
+all methods. Additional 40% seeds are running and will be folded in for a matched
+5-seed comparison. ISIC (2nd dataset) results are being added — see §7b._
 
 ### Table 3 — 40% noise, seed-matched accuracy
 | Seed | FedDyn | Proposed | Winner |
@@ -183,7 +187,7 @@ last-round 0.39 → 0.57, no collapse).
 
 **Yes, framed honestly as follows:**
 
-- **Clean data:** Proposed ≥ FedDyn on accuracy (0.695 vs 0.667), tighter
+- **Clean data:** Proposed ≥ FedDyn on accuracy (0.708 vs 0.688, 5 seeds), tighter
   variance, comparable fairness.
 - **40% label noise:** Proposed **ties** FedDyn on every metric (accuracy within
   one std; Jain 0.904 vs 0.906; worst-client 0.215 vs 0.232), is **more stable**
@@ -203,7 +207,7 @@ baselines on accuracy" — under 40% noise it is a statistical tie.
 ## 9. Limitations (stated up front)
 - The 40%-noise accuracy is a **tie**, not a win; seed 2 (where FedDyn is unusually
   strong) still favors FedDyn.
-- The clean-data edge (0.695 vs 0.667) is within seed variance — read it as parity.
+- The clean-data edge (0.708 vs 0.688, 5 seeds) is within seed variance — read it as parity.
 - **Single dataset (OCTMNIST), 3 seeds** — variance is high; one seed can move the
   mean. More seeds and datasets are needed to firm up the claim.
 - The detector assumes corrupted clients are a minority and that clean-consensus
