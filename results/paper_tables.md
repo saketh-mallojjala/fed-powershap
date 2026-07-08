@@ -9,14 +9,6 @@
 | FedDyn | 0.667 ± 0.031 | 0.965 ± 0.008 | 0.481 ± 0.046 |
 | Proposed | 0.695 ± 0.030 | 0.958 ± 0.020 | 0.452 ± 0.088 |
 
-### 20% noisy clients (60% label flip)
-
-| Method | Accuracy | Jain index | Worst-client acc |
-|---|---|---|---|
-| FedAvg | nan ± nan | nan ± nan | nan ± nan |
-| FedDyn | nan ± nan | nan ± nan | nan ± nan |
-| Proposed | 0.485 ± 0.000 | 0.873 ± 0.000 | 0.129 ± 0.000 |
-
 ### 40% noisy clients (60% label flip)
 
 | Method | Accuracy | Jain index | Worst-client acc |
