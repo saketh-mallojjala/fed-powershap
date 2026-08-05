@@ -21,6 +21,10 @@ from data.dataset import get_test_loader
 from federated.aggregation import _BN_MARKERS, aggregate, bn_keys
 from federated.client import Client
 from federated.contribution import fedce_weights
+from federated.dcfi import (
+    HIGH, LOW, MEDIUM, TIER_NAMES, ClientHistory, RewardChannel, RiskScorer,
+    SafetyGate, select_dcfi, update_reliability,
+)
 from federated.selection import SelectionOutcome, select_clients
 from federated.shapley import _cap_weights, compute_cssv, cssv_to_weights
 from models import CLASSIFIER_LAYER_NAME
@@ -29,10 +33,123 @@ from models import CLASSIFIER_LAYER_NAME
 CLASSIFIER_WEIGHT_KEY = f"{CLASSIFIER_LAYER_NAME}.weight"
 
 
+def _flat_delta(global_state, client_state) -> np.ndarray:
+    """Flattened full-model update, as a numpy vector (for risk geometry)."""
+    parts = []
+    for k, g in global_state.items():
+        if torch.is_floating_point(g) and k in client_state:
+            parts.append((client_state[k].float() - g.float()).reshape(-1))
+    if not parts:
+        return np.zeros(1, dtype=np.float32)
+    return torch.cat(parts).cpu().numpy()
+
+
+def _split_val_test(test_set, frac: float, seed: int, num_workers: int = 0):
+    """Split the test pool into a server validation set and a reporting test set.
+
+    DCFI needs held-out data to estimate each client's utility. Reusing the
+    reported test set for that would let the mechanism optimise against the
+    numbers we report, so the two are kept disjoint.
+    """
+    from torch.utils.data import Subset
+    n = len(test_set)
+    idx = np.random.default_rng(seed + 99).permutation(n)
+    n_val = max(1, int(round(n * frac)))
+    val = Subset(test_set, idx[:n_val].tolist())
+    tst = Subset(test_set, idx[n_val:].tolist())
+    return (get_test_loader(val, num_workers=num_workers),
+            get_test_loader(tst, num_workers=num_workers))
+
+
 def _is_running_stat(key: str) -> bool:
     """BN running buffers (mean/var/count) must be averaged, never momentum- or
     correction-updated: pushing running_var negative blows up BatchNorm."""
     return key.endswith(_BN_MARKERS)
+
+
+def _binary_auc(labels: np.ndarray, pos_prob: np.ndarray) -> float:
+    """ROC-AUC for a binary task via the Mann-Whitney rank identity.
+
+    Ties get averaged ranks, so this matches sklearn's roc_auc_score. Returns 0.5
+    when one class is absent from the test set (AUC is undefined there).
+    """
+    n_pos = int((labels == 1).sum())
+    n_neg = int((labels == 0).sum())
+    if n_pos == 0 or n_neg == 0:
+        return 0.5
+    order = np.argsort(pos_prob, kind="mergesort")
+    sorted_p = pos_prob[order]
+    ranks = np.empty(len(pos_prob), dtype=np.float64)
+    i = 0
+    while i < len(sorted_p):                      # average ranks within tie groups
+        j = i
+        while j + 1 < len(sorted_p) and sorted_p[j + 1] == sorted_p[i]:
+            j += 1
+        ranks[order[i:j + 1]] = 0.5 * (i + j) + 1.0
+        i = j + 1
+    return float((ranks[labels == 1].sum() - n_pos * (n_pos + 1) / 2.0) / (n_pos * n_neg))
+
+
+def _binary_quality_metrics(y: np.ndarray, p: np.ndarray, pred: np.ndarray) -> Dict[str, float]:
+    """Beyond-accuracy metrics for a binary screening task.
+
+    Motivation: accuracy and balanced accuracy both read the model at its
+    *default* 0.5 threshold, so they conflate two very different failures --
+    "the model cannot separate the classes" and "the model separates them but
+    its probabilities are mis-scaled". Under label noise the second dominates,
+    so we report:
+
+      ece      - expected calibration error (15 equal-width bins). How
+                 trustworthy the predicted probability is, which is what
+                 actually matters for clinical triage.
+      brier    - mean squared probability error (proper scoring rule).
+      auprc    - average precision for the positive (depressed) class; more
+                 informative than AUC when the classes are imbalanced.
+      f1_pos   - F1 on the positive class at the default threshold.
+      bacc_opt - balanced accuracy at the BEST threshold. The gap between this
+                 and `balanced_acc` isolates threshold/calibration loss from
+                 genuine loss of discriminative power.
+    """
+    out: Dict[str, float] = {}
+    n = len(y)
+    if n == 0 or not (0 < y.sum() < n):
+        return out
+
+    # --- calibration ---
+    bins = np.linspace(0.0, 1.0, 16)
+    idx = np.clip(np.digitize(p, bins[1:-1]), 0, 14)
+    ece = 0.0
+    for b in range(15):
+        m = idx == b
+        if m.any():
+            ece += (m.sum() / n) * abs(y[m].mean() - p[m].mean())
+    out["ece"] = float(ece)
+    out["brier"] = float(np.mean((p - y) ** 2))
+
+    # --- ranking quality on the positive class (average precision) ---
+    order = np.argsort(-p, kind="mergesort")
+    ys = y[order]
+    tp = np.cumsum(ys)
+    precision = tp / np.arange(1, n + 1)
+    n_pos = int(y.sum())
+    out["auprc"] = float((precision * ys).sum() / n_pos)
+
+    # --- F1 on the positive class at the default threshold ---
+    tp0 = float(((pred == 1) & (y == 1)).sum())
+    fp0 = float(((pred == 1) & (y == 0)).sum())
+    fn0 = float(((pred == 0) & (y == 1)).sum())
+    denom = 2 * tp0 + fp0 + fn0
+    out["f1_pos"] = float(2 * tp0 / denom) if denom > 0 else 0.0
+
+    # --- best achievable balanced accuracy over all thresholds ---
+    # Sweeping the sorted scores: at cut i the top-i items are predicted
+    # positive, so TPR = tp[i]/n_pos and FPR = (i-tp[i])/n_neg.
+    n_neg = n - n_pos
+    i = np.arange(1, n + 1)
+    tpr = tp / n_pos
+    fpr = (i - tp) / n_neg
+    out["bacc_opt"] = float(np.max(0.5 * (tpr + (1.0 - fpr))))
+    return out
 
 
 def _minmax(x: np.ndarray) -> np.ndarray:
@@ -67,9 +184,45 @@ class Server:
         self.client_bn: Dict[int, Dict[str, torch.Tensor]] = {}    # FedBN local BN
         self.momentum_buf: Optional[Dict[str, torch.Tensor]] = None
 
+        # ---- DCFI-UPA state (inert unless cfg.dcfi) ----
+        self.dcfi_hist: Dict[int, ClientHistory] = {}
+        self.risk_scorer = None
+        self.safety_gate = None
+        self.reward_channel = None
+        self.val_loader = None
+        if bool(getattr(cfg, "dcfi", False)):
+            self.dcfi_hist = {c.id: ClientHistory() for c in clients}
+            self.risk_scorer = RiskScorer(cfg)
+            self.safety_gate = SafetyGate(cfg, CLASSIFIER_LAYER_NAME)
+            self.reward_channel = RewardChannel(cfg)
+            # The mechanism needs a validation set to estimate utility. Carve it
+            # out of the test pool and keep it DISJOINT from the reported test
+            # split, so utility estimation never touches reported metrics.
+            self.val_loader, self.test_loader = _split_val_test(
+                test_set, frac=float(getattr(cfg, "dcfi_val_frac", 0.3)),
+                seed=cfg.seed, num_workers=getattr(cfg, "num_workers", 0),
+            )
+
     # ---------- selection ----------
 
+    def _select_dcfi_outcome(self, round_idx: int) -> SelectionOutcome:
+        """Selection driven by utility, reliability and under-participation,
+        skipping quarantined clients (federated/dcfi.py::select_dcfi)."""
+        active = select_dcfi(
+            num_clients=len(self.clients),
+            m=min(self.cfg.active_size_m, len(self.clients)),
+            hist=self.dcfi_hist,
+            rng=self.rng,
+            round_idx=round_idx,
+            under_bonus=float(getattr(self.cfg, "dcfi_under_bonus", 0.5)),
+            utility_weight=float(
+                getattr(self.cfg, "dcfi_selection_utility_weight", 0.5)),
+        )
+        return SelectionOutcome(candidates=active, active=active)
+
     def _select(self, round_idx: int) -> SelectionOutcome:
+        if bool(getattr(self.cfg, "dcfi", False)):
+            return self._select_dcfi_outcome(round_idx)
         cfg = self.cfg
         N = len(self.clients)
         strat = cfg.selection_strategy
@@ -154,6 +307,27 @@ class Server:
         active_sizes = self.client_sizes[outcome.active]
         cssv = None
 
+        # ----- DCFI-UPA: dual-channel path -----
+        if bool(getattr(cfg, "dcfi", False)):
+            d = self._dcfi_round(global_state, client_states, outcome.active, round_idx)
+            self.global_model.load_state_dict(
+                self._apply_server_momentum(global_state, d["new_state"]))
+            diag = self._diagnostics(global_state, client_states, None)
+            return {
+                "round": round_idx,
+                "candidates": outcome.candidates,
+                "candidate_losses": outcome.candidate_losses,
+                "active": outcome.active,
+                "weights": np.asarray(d["weights"]).tolist(),
+                "cssv": None,
+                "contrib_losses": getattr(self, "_last_losses", None),
+                # `weights` is surfaced at the top level already; drop the raw
+                # array here so the record stays JSON-serialisable.
+                "dcfi": {k: v for k, v in d.items()
+                         if k not in ("new_state", "weights")},
+                **diag,
+            }
+
         # ----- compute weights + new global state, per method -----
         if cfg.aggregation == "shapfed_wa":
             new_state, weights, cssv = self._agg_shapfed(
@@ -190,6 +364,12 @@ class Server:
         new_state = self._apply_server_momentum(global_state, new_state)
         self.global_model.load_state_dict(new_state)
 
+        # ---- diagnostics for the incentive analysis (C2) ----
+        # Computed AFTER the model update and never fed back into weights, so
+        # logging them cannot change any method's behaviour. They let the reward
+        # analysis compare signals (loss / cosine / norm) on identical runs.
+        diag = self._diagnostics(global_state, client_states, cssv)
+
         return {
             "round": round_idx,
             "candidates": outcome.candidates,
@@ -198,7 +378,153 @@ class Server:
             "weights": np.asarray(weights).tolist(),
             "cssv": cssv.tolist() if cssv is not None else None,
             "contrib_losses": getattr(self, "_last_losses", None),
+            **diag,
         }
+
+    # ---------- DCFI-UPA ----------
+
+    def _dcfi_round(self, global_state, client_states, active, round_idx) -> Dict:
+        """One DCFI round, after local training.
+
+        Training channel: risk -> safety gate (clip/quarantine) -> FedDyn on the
+        survivors with UNIFORM weights. Reward channel: utility and fairness are
+        measured on the validation split and paid separately. The two never
+        exchange numbers -- reward has no path back into the model.
+        """
+        cfg = self.cfg
+        hist = self.dcfi_hist
+        for cid in active:
+            hist[cid].selections += 1
+
+        # --- risk assessment ---
+        flat = [_flat_delta(global_state, cs) for cs in client_states]
+        # Probe the CURRENT global model on each active client's own data. Must
+        # be recomputed every round -- self.global_model still holds this
+        # round's starting weights, since the new state is loaded after.
+        losses = np.array(
+            [self.clients[c].probe_loss(self.global_model) for c in active],
+            dtype=float)
+        self._last_losses = losses.tolist()
+        rr = self.risk_scorer.score(
+            active, losses, flat, self.client_sizes[active], hist)
+
+        # --- safety gate (training channel) ---
+        kept, kept_ids, actions = self.safety_gate.apply(
+            global_state, client_states, rr, hist, round_idx)
+        for cid, tier in zip(rr.ids, rr.tier):
+            update_reliability(hist[cid], int(tier))
+
+        if not kept:                       # everyone excluded: hold the model
+            new_state = {k: v.clone() for k, v in global_state.items()}
+            weights = np.zeros(0)
+        else:
+            for cid in kept_ids:
+                hist[cid].accepted += 1
+            # UNIFORM weights: this is the whole point. Reward never becomes an
+            # aggregation weight, so paying a client less cannot hurt the model.
+            weights = np.ones(len(kept)) / len(kept)
+            new_state = self._agg_feddyn(global_state, kept, weights=weights)
+
+        # --- reward channel (off the training path) ---
+        utility, fairness = self._dcfi_utility(global_state, kept, kept_ids, new_state)
+        for cid, u in zip(kept_ids, utility):
+            h = hist[cid]
+            h.utility_ema = 0.7 * h.utility_ema + 0.3 * float(u)
+        paid = self.reward_channel.pay(kept_ids, utility, fairness, hist)
+
+        return dict(
+            new_state=new_state, weights=weights, kept_ids=kept_ids,
+            risk=rr.risk.tolist(), tier=[TIER_NAMES[int(t)] for t in rr.tier],
+            risk_components={k: v.tolist() for k, v in rr.components.items()},
+            actions=actions, utility=np.asarray(utility).tolist(),
+            fairness=np.asarray(fairness).tolist(),
+            reward={int(k): float(v) for k, v in paid.items()},
+            reliability={int(c): float(hist[c].reliability) for c in active},
+            quarantined=[int(c) for c in hist if hist[c].quarantined_until >= round_idx],
+        )
+
+    @torch.no_grad()
+    def _dcfi_utility(self, global_state, kept, kept_ids, full_state):
+        """Approximate leave-one-out utility and fairness contribution.
+
+        For each accepted client we re-aggregate WITHOUT it and measure how much
+        validation balanced accuracy (utility) and minority-class recall
+        (fairness) fall. This is the within-round LOO the framework calls for,
+        and it costs |kept| cheap evaluations on the validation split.
+        """
+        n = len(kept)
+        if n == 0:
+            return np.zeros(0), np.zeros(0)
+        if n == 1:
+            base = self._val_metrics(full_state)
+            return np.array([base["bacc"]]), np.array([base["minority_recall"]])
+
+        full = self._val_metrics(full_state)
+        util, fair = [], []
+        for i in range(n):
+            others = [cs for j, cs in enumerate(kept) if j != i]
+            w = np.ones(len(others)) / len(others)
+            # Plain weighted average, not the FedDyn update: we want this
+            # client's marginal effect on the aggregate, not a counterfactual
+            # server state (which would perturb the shared h term).
+            s = aggregate(others, w)
+            m = self._val_metrics(s)
+            util.append(full["bacc"] - m["bacc"])
+            fair.append(full["minority_recall"] - m["minority_recall"])
+        return np.array(util), np.array(fair)
+
+    @torch.no_grad()
+    def _val_metrics(self, state) -> Dict[str, float]:
+        """Balanced accuracy + minority-class recall on the validation split."""
+        cfg = self.cfg
+        model = self.model_builder().to(cfg.device)
+        model.load_state_dict(state)
+        model.eval()
+        C = cfg.num_classes
+        correct = np.zeros(C)
+        total = np.zeros(C)
+        for x, y in self.val_loader:
+            x, y = x.to(cfg.device), y.to(cfg.device)
+            pred = model(x).argmax(dim=1)
+            for c in range(C):
+                m = (y == c)
+                total[c] += m.sum().item()
+                correct[c] += (pred[m] == c).sum().item()
+        seen = total > 0
+        recall = np.where(seen, correct / np.maximum(total, 1), 0.0)
+        bacc = float(recall[seen].mean()) if seen.any() else 0.0
+        # Minority class = rarest present class in the validation split.
+        minority = int(np.argmin(np.where(seen, total, np.inf)))
+        return {"bacc": bacc, "minority_recall": float(recall[minority])}
+
+    def _diagnostics(self, global_state, client_states, cssv) -> Dict:
+        """Per-client update norm + CSSV score, logged every round for every
+        method. The norm is what exposes an inflated (f4) update, which cosine
+        similarity is scale-invariant to and therefore cannot see."""
+        out: Dict = {}
+        try:
+            norms = []
+            for cs in client_states:
+                tot = 0.0
+                for k, g in global_state.items():
+                    if torch.is_floating_point(g):
+                        tot += float(((cs[k].float() - g.float()) ** 2).sum())
+                norms.append(tot ** 0.5)
+            out["update_norms"] = norms
+        except Exception:                     # diagnostics must never break a run
+            out["update_norms"] = None
+        try:
+            c = cssv if cssv is not None else compute_cssv(
+                global_state=global_state, client_states=client_states,
+                classifier_weight_key=CLASSIFIER_WEIGHT_KEY,
+                num_classes=self.cfg.num_classes,
+                reference=getattr(self.cfg, "cssv_reference", "mean"),
+                trim_frac=getattr(self.cfg, "cssv_trim_frac", 0.2),
+            )
+            out["diag_cssv_score"] = ((np.asarray(c) + 1.0) / 2.0).sum(axis=1).tolist()
+        except Exception:
+            out["diag_cssv_score"] = None
+        return out
 
     # ---------- aggregation helpers ----------
 
@@ -382,11 +708,16 @@ class Server:
         per_class_total = np.zeros(cfg.num_classes)
         all_preds: List[int] = []
         all_labels: List[int] = []
+        all_pos_prob: List[float] = []
         ce = nn.CrossEntropyLoss(reduction="sum")
         for x, y in self.test_loader:
             x, y = x.to(cfg.device), y.to(cfg.device)
             logits = self.global_model(x)
             loss_sum += ce(logits, y).item()
+            if cfg.num_classes == 2:
+                all_pos_prob.extend(
+                    torch.softmax(logits, dim=1)[:, 1].cpu().tolist()
+                )
             pred = logits.argmax(dim=1)
             correct += (pred == y).sum().item()
             total += y.numel()
@@ -403,7 +734,17 @@ class Server:
             "loss": loss_sum / max(total, 1),
             "acc": correct / max(total, 1),
             "per_class_acc": per_class_acc.tolist(),
+            # Mean per-class recall. The honest headline whenever the test set is
+            # not balanced (e.g. the depression target is 58.6% positive, so plain
+            # accuracy rewards predicting the majority class).
+            "balanced_acc": float(per_class_acc[per_class_total > 0].mean())
+            if (per_class_total > 0).any() else 0.0,
         }
+        if cfg.num_classes == 2 and all_pos_prob:
+            y = np.array(all_labels)
+            p = np.array(all_pos_prob)
+            out["auc"] = _binary_auc(y, p)
+            out.update(_binary_quality_metrics(y, p, np.array(all_preds)))
         if cfg.dataset == "aptos":
             try:
                 from sklearn.metrics import cohen_kappa_score
