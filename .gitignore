@@ -7,3 +7,8 @@ data_cache/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Share bundles / archives (regenerable)
+*.zip
+# Root-level duplicate of docs/INCENTIVE_PROPOSAL.pdf
+/INCENTIVE_PROPOSAL.pdf

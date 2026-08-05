@@ -18,7 +18,7 @@ import torch
 from tqdm import tqdm
 
 from config import Config, apply_method_preset, get_config
-from data import MEDMNIST_REGISTRY, build_federated_datasets
+from data import MEDMNIST_REGISTRY, TABULAR_REGISTRY, build_federated_datasets
 from federated import Client, Server
 from models import build_model
 from utils import JsonLogger, set_seed
@@ -62,6 +62,22 @@ def apply_dataset_defaults(cfg: Config) -> Config:
     elif cfg.dataset == "aptos":
         cfg.num_classes = 5  # DR grades 0-4 (ordinal); QWK is the headline metric
         cfg.task = "single_label"
+    elif cfg.dataset in TABULAR_REGISTRY:
+        # Binary screening task on a dense feature vector: force the MLP and read
+        # the input width off the encoded data so --num-features never has to be
+        # passed by hand (it depends on the feature regime and one-hot widths).
+        from data.tabular import load_tabular
+        _, _, meta = load_tabular(
+            cfg.dataset, root=cfg.data_root, seed=cfg.seed,
+            feature_regime=cfg.feature_regime,
+        )
+        cfg.num_classes = meta.num_classes
+        cfg.task = "single_label"
+        cfg.num_features = meta.num_features
+        cfg.model = "mlp"
+        print(f"[data] {cfg.dataset} regime={meta.feature_regime} "
+              f"features={meta.num_features} train={meta.n_train} test={meta.n_test} "
+              f"pos_rate={meta.positive_rate:.4f} dropped_rows={meta.dropped_rows}")
     return cfg
 
 
@@ -90,6 +106,32 @@ def main():
         Client(i, subsets[i], client_labels[i], cfg, test_subset=test_subsets[i])
         for i in range(cfg.num_clients)
     ]
+    # Tag the adversarial clients chosen by build_federated_datasets. With
+    # --freerider-mode mixed each one gets a different attack type.
+    for cid, mode in getattr(cfg, "freerider_assignment", {}).items():
+        clients[cid].freerider_mode = mode
+
+    # Leave-one-out: drop one client AFTER partitioning + noise injection, so the
+    # remaining clients' data is bit-identical to the full federation. Selection
+    # and all server state are positional over `clients`, so re-indexing is safe.
+    excluded = int(getattr(cfg, "exclude_client", -1))
+    if excluded >= 0:
+        if not any(c.id == excluded for c in clients):
+            raise ValueError(f"--exclude-client {excluded} not in 0..{len(clients)-1}")
+        noisy_before = list(getattr(cfg, "noisy_client_ids", []))
+        was_noisy = excluded in set(noisy_before)
+        kept = [c.id for c in clients if c.id != excluded]
+        clients = [c for c in clients if c.id != excluded]
+        # Re-index positionally and remap the corrupted-client ground truth onto
+        # the new indices, so the log stays self-consistent after exclusion.
+        remap = {old: new for new, old in enumerate(kept)}
+        for pos, c in enumerate(clients):
+            c.id = pos
+        cfg.noisy_client_ids = sorted(remap[i] for i in noisy_before if i != excluded)
+        cfg.num_clients = len(clients)
+        print(f"[loo] excluded client {excluded} (noisy={was_noisy}); "
+              f"{cfg.num_clients} clients remain")
+
     sizes = [c.size for c in clients]
     print(f"[data] per-client size min/median/max = "
           f"{min(sizes)}/{sorted(sizes)[len(sizes)//2]}/{max(sizes)}")
@@ -102,6 +144,18 @@ def main():
             "type": "client_sizes",
             "sizes": sizes,
             "class_histograms": [c.class_histogram.tolist() for c in clients],
+            # Ground truth for the mechanism analysis: which clients had their
+            # labels corrupted. Set by build_federated_datasets; [] when clean.
+            "noisy_client_ids": getattr(cfg, "noisy_client_ids", []),
+            # -1 unless this is a leave-one-out run; ids above are post-exclusion.
+            "excluded_client": int(getattr(cfg, "exclude_client", -1)),
+            # Ground truth for the C2 free-rider analysis.
+            "freerider_client_ids": getattr(cfg, "freerider_client_ids", []),
+            "freerider_mode": getattr(cfg, "freerider_mode", "none"),
+            # {client_id: attack_name} -- lets the analysis separate outcomes
+            # per attack type even when several run in the same federation.
+            "freerider_assignment": {
+                int(k): v for k, v in getattr(cfg, "freerider_assignment", {}).items()},
         })
 
         pbar = tqdm(range(cfg.num_rounds), desc="rounds")

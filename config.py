@@ -23,6 +23,7 @@ class Config:
 
     # Dataset
     # cifar10 | mnist | fmnist | aptos | octmnist | isic | chestxray14 | brats
+    # | student_depression | depression_student  (tabular mental-health)
     dataset: str = "cifar10"
     data_root: str = "./data_cache"
     num_classes: int = 10
@@ -48,6 +49,76 @@ class Config:
     # Per-client local test fraction held out for fairness (Jain) evaluation.
     # 0.0 disables per-client eval. Identical (seeded) split across all methods.
     local_test_frac: float = 0.2
+
+    # ---- DCFI-UPA: Dual-Channel Fair Incentive & Utility-Preserving Agg. ----
+    # Training channel = FedDyn with the reliability detector as a SAFETY GATE
+    # only (clip/quarantine, never reweight). Reward channel runs off the
+    # training path entirely. See federated/dcfi.py.
+    dcfi: bool = False
+    # Risk-score component weights (each is a robust z-score).
+    dcfi_w_loss: float = 0.5          # probe loss -> data quality (weak on its own:
+                                      # with clean labels it only tracks non-IID spread)
+    dcfi_w_geometry: float = 1.0      # effort density -> did they work?
+    dcfi_w_temporal: float = 1.0      # self-similarity -> replay / staleness
+    # Risk tier thresholds on the combined score. Set from the honest spread,
+    # not tuned against attacks: the relative z-scores are computed over only
+    # ~5 active clients, so a tight threshold produces heavy false flagging
+    # (measured: 62% of honest observations at medium=1.0).
+    dcfi_medium_risk: float = 2.0
+    dcfi_high_risk: float = 4.0
+    # Absolute overrides, applied regardless of the peer comparison.
+    dcfi_gross_ratio: float = 20.0     # effort density this far from peer median
+    dcfi_replay_cos: float = 0.999    # replay = near-exact resend of own prev delta
+    dcfi_gross_ratio_hi: float = 8.0  # (kept for reference; see dcfi_gross_ratio)
+    # Medium-risk response: clip the CLASSIFIER delta toward this quantile of
+    # the low-risk peers' norm. The feature extractor is never clipped.
+    dcfi_clip_quantile: float = 0.5
+    # Quorum floor: the gate may never drop the active set below this
+    # fraction. Excess high-risk clients are demoted to clipped instead.
+    dcfi_min_keep_frac: float = 0.6
+    # High-risk response: quarantine after this many consecutive high rounds.
+    dcfi_quarantine_after: int = 2
+    dcfi_quarantine_rounds: int = 5
+    # Selection: utility + reliability + under-participation bonus.
+    dcfi_under_bonus: float = 0.5
+    dcfi_selection_utility_weight: float = 0.5
+    # Reward channel: budget split, cap and holdback.
+    dcfi_budget: float = 1.0
+    dcfi_w_base: float = 0.2          # participation floor (individual rationality)
+    dcfi_w_utility: float = 0.5
+    dcfi_w_fairness: float = 0.3
+    dcfi_reward_cap: float = 0.4      # max share of one round's budget
+    dcfi_holdback: float = 0.2        # retained until reliability is re-established
+    dcfi_release_reliability: float = 0.7
+    # Per-client cost, used for the reward-to-cost and individual-rationality
+    # metrics. Expressed as a share of the per-round budget.
+    dcfi_client_cost: float = 0.05
+    # Fraction of the test pool reserved as the server's validation set for
+    # utility estimation. Kept disjoint from the reported test split.
+    dcfi_val_frac: float = 0.3
+
+    # Free-rider adversaries (proposal §9.3 attack ladder). A fraction
+    # `freerider_frac` of clients harvest the global model while contributing
+    # little or nothing. Disjoint from the label-noise clients so the two
+    # adversary types can be analysed separately.
+    #   f1 - random Gaussian update, scaled to look like a plausible update
+    #   f2 - zero effort: returns the global model unchanged
+    #   f3 - trains on `freerider_subset_frac` of its data only
+    #   f4 - trains honestly, then inflates the update by `freerider_scale`
+    #        (targets the cosine/contribution signal, not the loss signal)
+    freerider_frac: float = 0.0
+    freerider_mode: str = "none"        # none | f1 | f2 | f3 | f4
+    freerider_scale: float = 3.0        # f4 update-inflation factor
+    freerider_subset_frac: float = 0.1  # f3 fraction of local data actually used
+    freerider_noise_scale: float = 1.0  # f1 sigma, relative to a typical update
+
+    # Leave-one-out: drop this client id from the federation entirely (-1 = keep
+    # all). The Dirichlet partition and the noisy-client draw both run BEFORE the
+    # exclusion and are seeded by `seed`, so client k is the same client whether
+    # or not it is excluded -- which is what makes V(N) - V(N\{k}) a valid
+    # marginal value. Used by scripts/loo_reward_fidelity.py to build the
+    # ground-truth contribution the reward is scored against (proposal C1).
+    exclude_client: int = -1
 
     # Client data-quality heterogeneity (single-label only). A fraction
     # `noisy_client_frac` of clients are "low quality": `label_noise_rate` of
@@ -138,8 +209,22 @@ class Config:
     # Server-side momentum (FedAvgM-style); 0.0 disables.
     server_momentum: float = 0.0
 
+    # --- tabular datasets only ---
+    # Which feature set to use on the depression-screening data:
+    #   "screening" - drop the "Have you ever had suicidal thoughts?" item. That
+    #                 item is a core diagnostic symptom and the top SHAP feature,
+    #                 so keeping it nearly saturates the task -- and a saturated
+    #                 task cannot discriminate between aggregators. This is the
+    #                 headline regime (see docs/INCENTIVE_PROPOSAL.md §9.1).
+    #   "full"      - keep every feature (reported as the saturation reference).
+    feature_regime: str = "screening"
+    # Set automatically from the loader; MLP input width.
+    num_features: int = 0
+    mlp_depth: int = 2
+    mlp_dropout: float = 0.1
+
     # Model
-    model: str = "cnn"               # cnn | resnet18 | resnet34 | resnet50
+    model: str = "cnn"               # cnn | resnet18 | resnet34 | resnet50 | mlp
     hidden_dim: int = 64
     pretrained: bool = True          # ImageNet weights for resnet*
 
@@ -207,6 +292,17 @@ METHOD_PRESETS = {
         # poorly (label-noise clients). The cosine/CSSV signal is anti-
         # discriminative under partial participation; loss separates cleanly.
         contrib_signal="loss", loss_weight_beta=1.5,
+    ),
+    # DCFI-UPA. Training channel is plain FedDyn with UNIFORM weights over the
+    # clients that survive the safety gate -- deliberately NOT reward-weighted,
+    # since contribution-weighted aggregation was measured to cost accuracy.
+    # The gate may clip a suspicious classifier component or quarantine a
+    # repeat offender, but it never scales an accepted client's influence.
+    "dcfi": dict(
+        selection_strategy="random",     # overridden by the DCFI selector
+        aggregation="feddyn", local_solver="feddyn",
+        server_momentum=0.0, feddyn_alpha=0.01, feddyn_weight_consistent=True,
+        dcfi=True,
     ),
 }
 

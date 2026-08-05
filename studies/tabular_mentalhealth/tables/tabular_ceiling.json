@@ -1,0 +1,78 @@
+[
+  {
+    "dataset": "student_depression",
+    "regime": "screening",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "majority": 0.5855461461174106,
+    "num_features": 90,
+    "n_train": 22294,
+    "n_test": 5574,
+    "acc": 0.7938045688314795,
+    "balanced_acc": 0.7830272260419319,
+    "auc": 0.8621694447981213,
+    "acc_std": 0.004907364726451041,
+    "balanced_acc_std": 0.005348774325899044,
+    "auc_std": 0.002825529250529454
+  },
+  {
+    "dataset": "student_depression",
+    "regime": "full",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "majority": 0.5855461461174106,
+    "num_features": 91,
+    "n_train": 22294,
+    "n_test": 5574,
+    "acc": 0.8385958617390264,
+    "balanced_acc": 0.8310575555979968,
+    "auc": 0.9123110481566363,
+    "acc_std": 0.003024558932281252,
+    "balanced_acc_std": 0.0036312823726025226,
+    "auc_std": 0.001804883287301869
+  },
+  {
+    "dataset": "depression_student",
+    "regime": "screening",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "majority": 0.50199203187251,
+    "num_features": 9,
+    "n_train": 402,
+    "n_test": 100,
+    "acc": 0.7833333333333333,
+    "balanced_acc": 0.7833333333333333,
+    "auc": 0.8901333333333333,
+    "acc_std": 0.04027681991198189,
+    "balanced_acc_std": 0.04027681991198195,
+    "auc_std": 0.021608228885208403
+  },
+  {
+    "dataset": "depression_student",
+    "regime": "full",
+    "seeds": [
+      0,
+      1,
+      2
+    ],
+    "majority": 0.50199203187251,
+    "num_features": 10,
+    "n_train": 402,
+    "n_test": 100,
+    "acc": 0.96,
+    "balanced_acc": 0.96,
+    "auc": 0.9961333333333333,
+    "acc_std": 0.014142135623730963,
+    "balanced_acc_std": 0.014142135623730963,
+    "auc_std": 0.003461534662865897
+  }
+]

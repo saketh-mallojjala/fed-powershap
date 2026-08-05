@@ -1,0 +1,1131 @@
+<!doctype html><html><head><meta charset="utf-8"><title>DCFI-UPA Technical Report</title><style>
+@page { size: A4; margin: 20mm 18mm; }
+* { box-sizing: border-box; }
+body { font-family: "Georgia","Times New Roman",serif; color:#1a1a1a; line-height:1.5;
+  font-size:10.5pt; max-width:none; margin:0; }
+h1 { font-size:20pt; line-height:1.2; margin:0 0 4px; color:#0b3d63; }
+h2 { font-size:14pt; color:#0b3d63; border-bottom:2px solid #0b3d63; padding-bottom:3px;
+     margin:26px 0 10px; page-break-after:avoid; }
+h3 { font-size:11.5pt; color:#12507f; margin:16px 0 6px; page-break-after:avoid; }
+h4 { font-size:10.5pt; color:#333; margin:12px 0 4px; font-style:italic; }
+p { margin:6px 0; text-align:justify; }
+.subtitle { font-size:11pt; color:#444; font-style:italic; margin:6px 0 2px; }
+.meta { font-size:9pt; color:#666; margin:2px 0; }
+.titleblock { border-bottom:3px solid #0b3d63; padding-bottom:12px; margin-bottom:8px; }
+code, .mono { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:9pt;
+  background:#f2f5f8; padding:1px 4px; border-radius:3px; }
+table { border-collapse:collapse; width:100%; margin:10px 0; font-size:9.3pt;
+  page-break-inside:avoid; }
+th,td { border:1px solid #cdd6df; padding:5px 8px; text-align:center; }
+th { background:#0b3d63; color:#fff; font-weight:bold; }
+td:first-child, th:first-child { text-align:left; }
+tr:nth-child(even) td { background:#f5f8fb; }
+.win { color:#0a7d3f; font-weight:bold; }
+.lose { color:#b3261e; font-weight:bold; }
+ul,ol { margin:6px 0 6px 6px; padding-left:18px; }
+li { margin:3px 0; }
+.abstract { background:#f7f9fb; border:1px solid #dde3ea; border-radius:6px;
+  padding:12px 16px; margin:14px 0; font-size:10pt; }
+.abstract b { color:#0b3d63; }
+.callout { background:#eef4f9; border-left:4px solid #0b3d63; padding:8px 12px;
+  margin:12px 0; font-size:9.8pt; }
+.novelty { background:#e9f6ee; border-left:4px solid #0a7d3f; padding:8px 12px; margin:12px 0; }
+.warn { background:#fdf0ee; border-left:4px solid #b3261e; padding:8px 12px; margin:12px 0; }
+.eq { text-align:center; font-family:"SF Mono",Menlo,monospace; font-size:10pt;
+  background:#f2f5f8; padding:8px; border-radius:4px; margin:8px 0; }
+</style></head><body><div class="titleblock">
+<h1>Dual-Channel Fair Incentive &amp; Utility-Preserving Aggregation</h1>
+<p class="subtitle">DCFI-UPA: specification, implementation, and evaluation against an eight-attack
+threat model on federated depression screening</p>
+<p class="meta"><b>Project:</b> FedPowerShap &rarr; DCFI-UPA &nbsp;|&nbsp;
+<b>Advisor:</b> Prof. Lekha &nbsp;|&nbsp; <b>Date:</b> August 2026</p>
+<p class="meta"><b>Document type:</b> Technical report (post-implementation, results included)
+&nbsp;|&nbsp; <b>Dataset:</b> Kaggle Student Depression (27,901 records, tabular)</p>
+<p class="meta"><b>Evidence base:</b> 864 federated training runs across four experiment families.
+Every number in this document is reproducible from <code>studies/tabular_mentalhealth/</code>.</p>
+</div>
+
+<div class="abstract">
+<p><b>Abstract.</b> This report specifies and evaluates <b>DCFI-UPA</b>, a framework that separates
+federated learning into two channels: a <b>training channel</b> optimising predictive performance
+(FedDyn, with a reliability detector demoted to a safety gate) and a <b>reward channel</b>
+compensating useful, reliable and under-represented contributions. The separation is motivated by a
+measured result from our earlier work: contribution-weighted aggregation <i>reduced</i> accuracy
+precisely when its detector worked best, because the two objectives were in conflict.</p>
+<p>We implement every specified component &mdash; three-signal risk scoring, a three-tier response
+(full / component-wise clipping / quarantine), layer-wise asymmetry, utility-and-fairness-aware
+selection, and a base/utility/fairness budget split with caps and holdback &mdash; and evaluate it
+against <b>eight adversary types</b> using <b>fifteen metrics</b> in three families.</p>
+<p><b>Findings are mixed and reported without adjustment.</b> The <b>reward channel succeeds</b>:
+individual rationality 98&ndash;100%, reward-to-cost 3.8&ndash;4.6, Jain index on useful-client
+rewards 0.85&ndash;0.95, selection-frequency Jain 0.76&ndash;0.98, exact budget balance, and
+adversary reward capture driven to 0.8&ndash;9% (against a 40% fair share) for four of eight
+attacks. The <b>safety gate fails</b>: it loses to plain FedDyn on eight of nine conditions and
+collapses 3 of 8 seeds <i>with no adversaries present</i>. An ablation isolates the cause &mdash;
+with the gate disabled, DCFI matches FedDyn (0.757 vs 0.768). We also identify two attacks
+(<code>stale_model</code>, <code>scaled_global</code>) that collapse FedDyn in 8 of 8 seeds, and
+one measured impossibility result explaining why magnitude-based defences cannot catch moderate
+update inflation under non-IID data. <b>Recommendation: retain the reward channel, disable the gate
+by default, and treat the two collapse-inducing attacks as the open problem.</b></p>
+</div>
+
+<h2>1. Motivation: why two channels</h2>
+<p>Our earlier work produced a specific, replicated negative result. Contribution-aware aggregation
+(down-weighting clients whose data looks corrupted) was tested on four datasets across two
+modalities. It never beat FedDyn under label noise. The sharpest evidence was a controlled
+single-variable ablation:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Variant of the same method</th>
+<th style="text-align: center;">Detects corrupted clients?</th>
+<th style="text-align: center;">Balanced acc @40% noise</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">with ShapFed CSSV signal</td>
+<td style="text-align: center;"><strong>No</strong> (noisy/clean weight ratio 1.013)</td>
+<td style="text-align: center;"><strong>0.695</strong> &asymp; FedDyn (0.697)</td>
+</tr>
+<tr>
+<td style="text-align: left;">with loss-detector signal</td>
+<td style="text-align: center;"><strong>Yes</strong> (ratio 0.783, AUC 0.874)</td>
+<td style="text-align: center;"><strong>0.665</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The variant that detects nothing reduces to FedDyn and matches it. The variant that detects well
+loses 0.030. <strong>The better the detector worked, the worse the model became.</strong></p>
+<p>The mechanism is now understood. A client with 60% flipped labels still holds 40% correct labels,
+and its gradients still carry usable signal. FedDyn's dynamic regularisation already bounds how far
+any single client can drag the global model. Down-weighting therefore discards real information to
+buy noise suppression that was already present &mdash; a net loss.</p>
+<div class="callout">
+<b>The design consequence.</b> Contribution measurement and model optimisation want different
+things from the same signal. An <i>aggregation weight</i> must maximise information retained; a
+<i>reward</i> must be monotone in genuine contribution. Forcing one quantity to do both jobs is why
+the earlier method could not win. DCFI-UPA separates them: the reward channel consumes the
+detector's <b>ranking</b>, while the training channel keeps FedDyn's <b>uniform weighting</b> over
+accepted clients. Paying a client less can then never degrade the model.
+</div>
+
+<h2>2. Architecture</h2>
+<div class="eq">
+TRAINING CHANNEL &nbsp;&rarr;&nbsp; accuracy &nbsp;&nbsp;|&nbsp;&nbsp; REWARD CHANNEL &nbsp;&rarr;&nbsp; fair compensation
+</div>
+
+<p>One communication round proceeds as follows. Steps 1&ndash;5 are the training channel; steps 6&ndash;9
+are the reward channel and never write back into the model.</p>
+<pre><code>  Global model w_t
+       |
+  (1)  SELECT active set        &lt;- utility + reliability + under-participation bonus,
+       |                           skipping quarantined clients
+  (2)  LOCAL TRAINING (FedDyn)  &lt;- each client trains with dynamic regularisation
+       |                           (adversaries corrupt or skip this step)
+  (3)  RISK SCORING             &lt;- probe loss  (data quality)
+       |                          update geometry (effort density)
+       |                          temporal consistency (replay / staleness)
+       v
+  (4)  SAFETY GATE (tiered, layer-wise)
+       |     low     -&gt; full FedDyn participation, untouched
+       |     medium  -&gt; CLASSIFIER delta clipped toward the low-risk peer median;
+       |                feature extractor passes through unmodified
+       |     high    -&gt; excluded this round; quarantined on a repeated streak
+       |     (quorum floor: never drop the active set below 60%)
+       v
+  (5)  AGGREGATE with FedDyn, UNIFORM weights over survivors  -&gt; w_{t+1}
+       |
+       +-------------------- no path back from reward to model --------------------+
+       |                                                                          |
+  (6)  ESTIMATE UTILITY        &lt;- within-round leave-one-out on a held-out         |
+       |                          validation split (disjoint from the test set)    |
+  (7)  FAIRNESS CONTRIBUTION   &lt;- marginal effect on minority-class recall         |
+       |                                                                          |
+  (8)  UPDATE RELIABILITY      &lt;- asymmetric EMA: decays fast, rebuilds slowly     |
+       |                                                                          |
+  (9)  PAY  r_k = B(w_base/|S| + w_util*util_k + w_fair*fair_k), capped,           |
+            with a holdback released once reliability is re-established  ----------+
+</code></pre>
+<p>Implementation: <code>federated/dcfi.py</code> (456 lines), wired into <code>federated/server.py</code>. The framework is
+inert unless <code>--method dcfi</code>, so every baseline is bit-identical to before (verified &sect;9.1).</p>
+<h2>3. Training channel</h2>
+<h3>3.1 Base optimiser</h3>
+<p>FedDyn, unchanged, with <code>feddyn_alpha=0.01</code> and the weight-consistent server update. Aggregation
+uses <strong>uniform weights</strong> over accepted clients. This is deliberate and is the core of the design:
+reward is never converted into an aggregation weight.</p>
+<h3>3.2 Risk score: three independent views</h3>
+<p>Each view is converted to a robust (median/MAD) z-score so no view dominates by virtue of its
+natural scale. The three are complementary, and none is sufficient alone:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">View</th>
+<th style="text-align: left;">What it measures</th>
+<th style="text-align: left;">Blind to</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Probe loss</strong> <code>L(w_t; D_k)</code></td>
+<td style="text-align: left;">data quality &mdash; corrupted labels disagree with the clean consensus</td>
+<td style="text-align: left;"><strong>effort</strong> entirely: a client with good data that never trains has a <em>low</em> loss and looks healthy</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Update geometry</strong> <code>‖Δ_k‖ / n_k</code></td>
+<td style="text-align: left;">effort density &mdash; movement per sample, two-sided (too small = no work, too large = inflation)</td>
+<td style="text-align: left;">inflation smaller than the natural spread of honest effort (&sect;7.3)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Temporal consistency</strong> <code>cos(Δ_k^t, Δ_k^{t-1})</code></td>
+<td style="text-align: left;">replay and staleness &mdash; a resent update is self-identical</td>
+<td style="text-align: left;">persistent attacks that never change behaviour</td>
+</tr>
+</tbody>
+</table>
+<div class="novelty">
+<b>Empirical justification for blending.</b> The loss detector's free-rider detection AUC is
+<b>0.63</b> &mdash; near chance. Its label-noise detection AUC is <b>0.87&ndash;0.92</b>. The same
+signal is excellent at one adversary and useless at another. This is the first quantitative
+evidence in this project that a single contribution signal cannot cover the attack surface, and it
+is why the risk score is a blend rather than a detector.
+</div>
+
+<p>The soft score drives the MEDIUM tier:</p>
+<div class="eq">risk_k = w_loss &middot; [z(loss_k)]_+ &nbsp;+&nbsp; w_geom &middot; [z(dev_k)]_+</div>
+
+<p>with <code>w_loss=0.5</code>, <code>w_geom=1.0</code>, <code>medium=2.0</code>, <code>high=4.0</code>. Three <strong>absolute overrides</strong> bypass the
+peer comparison entirely, because they are unambiguous on their own and the peer sample (5 clients,
+possibly 40% adversarial) is not trustworthy: a (near-)zero update, a replay
+(<code>cos &gt; 0.999</code> with the client's own previous delta), and a gross scale deviation
+(<code>&gt; 20×</code> the peer median effort density).</p>
+<h3>3.3 Tiered response and layer-wise asymmetry</h3>
+<p><strong>Layer-wise.</strong> The feature extractor is aggregated normally; strict control applies only to the
+classifier. Rationale: label noise corrupts the decision boundary far more than the representation,
+so a noisy client's representation learning remains useful. Clipping the classifier component keeps
+that value where scalar down-weighting discards the whole update &mdash; which is exactly the failure
+diagnosed in &sect;1.</p>
+<p><strong>Clipping (MEDIUM).</strong> The classifier delta is shrunk toward the median classifier-delta norm of the
+<strong>low-risk clients only</strong>, so a colluding high-risk group cannot inflate the reference used to rein
+it in.</p>
+<p><strong>Quarantine (HIGH).</strong> Excluded for the round; after <code>quarantine_after=2</code> consecutive high-risk
+rounds the client is quarantined for 5 rounds and skipped by selection.</p>
+<p><strong>Quorum floor.</strong> The gate may never drop the active set below 60%; excess high-risk clients are
+demoted to clipped, least-risky first. See &sect;8.4 &mdash; without this, false exclusions alone
+collapsed clean-data seeds.</p>
+<h2>4. Reward channel</h2>
+<h3>4.1 Selection</h3>
+<div class="eq">score_k = w_u &middot; util&#770;_k &nbsp;+&nbsp; w_under &middot; under_k &nbsp;+&nbsp; reliability_k</div>
+
+<p>where <code>under_k</code> is how far below the most-selected client k sits. Clients are sampled <strong>without
+replacement proportional to score</strong>, not taken top-m: deterministic top-m permanently locks out
+mid-ranked clients, which shows up directly in the selection-frequency Jain index. Quarantined
+clients are excluded.</p>
+<h3>4.2 Utility and fairness estimation</h3>
+<p>For each accepted client we re-aggregate <strong>without</strong> it and measure the fall in validation
+balanced accuracy (<strong>utility</strong>) and in minority-class recall (<strong>fairness contribution</strong>). This is
+the framework's "approximate leave-one-out contribution", computed every round at a cost of
+<code>|S|</code> cheap evaluations. The validation split is <strong>disjoint from the reported test set</strong>
+(<code>dcfi_val_frac=0.3</code>), so the mechanism can never optimise against reported numbers.</p>
+<h3>4.3 Payment rule</h3>
+<div class="eq">r_k = B &middot; [ w_base/|S| &nbsp;+&nbsp; w_util &middot; util&#771;_k &nbsp;+&nbsp; w_fair &middot; fair&#771;_k ]</div>
+
+<p>with <code>w_base=0.2</code>, <code>w_util=0.5</code>, <code>w_fair=0.3</code>, normalised so <strong>budget balance is exact by
+construction</strong>. The base term underwrites individual rationality: an honest client is paid even in a
+round where its measured marginal utility happened to be small. A <strong>cap</strong> (<code>0.4</code> of the round
+budget, applied by water-filling) bounds any single client's share. A <strong>holdback</strong> (<code>0.2</code>) is
+retained and released only once reliability clears <code>0.7</code>, so a client that games one round cannot
+cash out immediately.</p>
+<p>Reliability is an asymmetric EMA &mdash; it decays fast on a high-risk round and rebuilds slowly, so
+intermittent gaming does not pay.</p>
+<h2>5. Threat model: eight adversaries</h2>
+<p>All eight are implemented in <code>federated/client.py</code>. Verified update signatures (mean <code>‖Δ‖</code>
+relative to honest clients) confirm each behaves as intended.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: center;">#</th>
+<th style="text-align: left;">Attack</th>
+<th style="text-align: left;">Behaviour</th>
+<th style="text-align: center;">Signature</th>
+<th style="text-align: left;">Which view should see it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: center;">1</td>
+<td style="text-align: left;"><code>zero_update</code></td>
+<td style="text-align: left;">returns the global model untouched</td>
+<td style="text-align: center;">0.00×</td>
+<td style="text-align: left;">geometry (zero)</td>
+</tr>
+<tr>
+<td style="text-align: center;">2</td>
+<td style="text-align: left;"><code>stale_model</code></td>
+<td style="text-align: left;">trains once, then resends that model forever</td>
+<td style="text-align: center;">drifts</td>
+<td style="text-align: left;">temporal</td>
+</tr>
+<tr>
+<td style="text-align: center;">3</td>
+<td style="text-align: left;"><code>scaled_global</code></td>
+<td style="text-align: left;">returns <code>c·w_global</code>, never trains</td>
+<td style="text-align: center;">large</td>
+<td style="text-align: left;">geometry (gross)</td>
+</tr>
+<tr>
+<td style="text-align: center;">4</td>
+<td style="text-align: left;"><code>random_update</code></td>
+<td style="text-align: left;">Gaussian noise of plausible magnitude</td>
+<td style="text-align: center;">0.18×</td>
+<td style="text-align: left;">geometry + loss</td>
+</tr>
+<tr>
+<td style="text-align: center;">5</td>
+<td style="text-align: left;"><code>copied_update</code></td>
+<td style="text-align: left;">trains once, replays that delta forever</td>
+<td style="text-align: center;">1.00×</td>
+<td style="text-align: left;">temporal (replay)</td>
+</tr>
+<tr>
+<td style="text-align: center;">6</td>
+<td style="text-align: left;"><code>low_effort</code></td>
+<td style="text-align: left;">trains on 10% of its data</td>
+<td style="text-align: center;">0.10×</td>
+<td style="text-align: left;">geometry</td>
+</tr>
+<tr>
+<td style="text-align: center;">7</td>
+<td style="text-align: left;"><code>label_flip</code></td>
+<td style="text-align: left;">trains honestly on 60%-corrupted labels</td>
+<td style="text-align: center;">normal</td>
+<td style="text-align: left;">loss</td>
+</tr>
+<tr>
+<td style="text-align: center;">8</td>
+<td style="text-align: left;"><code>norm_inflation</code></td>
+<td style="text-align: left;">trains honestly, multiplies Δ by 3</td>
+<td style="text-align: center;">2.64×</td>
+<td style="text-align: left;">geometry</td>
+</tr>
+</tbody>
+</table>
+<p>Attacks 2 and 5 are <strong>replay</strong> attacks: they pay the training cost once and harvest indefinitely.
+This is the realistic economic threat and, as &sect;7.1 shows, <code>stale_model</code> is the single most
+destructive attack in the suite.</p>
+<h2>6. Experimental setup</h2>
+<p><strong>Dataset.</strong> Kaggle Student Depression (<code>hopesb/student-depression-dataset</code>), 27,901 records,
+27,868 usable, binary target at <strong>58.6% positive</strong>. Note this is a self-selected survey sample, not
+an epidemiological one (clinical prevalence is 15&ndash;35%).</p>
+<p><strong>Feature regime: <code>screening</code></strong> &mdash; the <em>"have you ever had suicidal thoughts?"</em> item is removed.
+This is a measured decision, not a preference: with that feature the 502-row companion dataset
+reaches 96.0% accuracy / 0.996 AUC, i.e. fully saturated, and <strong>a saturated task cannot discriminate
+between aggregators</strong>. Centralized ceilings: 0.794 acc / 0.783 balanced acc (screening) vs
+0.839 / 0.831 (full).</p>
+<p><strong>Protocol (frozen, identical for every method).</strong> 10 clients, 5 active per round, 2 local epochs,
+40 rounds, SGD lr=0.005 cosine-decayed, batch 128, Dirichlet &alpha;=0.3, 20% per-client local test
+split, metric read at the <strong>last</strong> round, <strong>8 seeds</strong>. Adversary fraction 40%. The local learning
+rate was calibrated on FedAvg alone and then frozen &mdash; no per-method tuning.</p>
+<p><strong>Reference points.</strong> Majority-class = 0.586 accuracy / 0.500 balanced accuracy. A run at
+balanced accuracy &le; 0.51 is <strong>collapsed</strong> (predicting a single class) and is counted separately,
+because collapse is a qualitatively different failure from a small accuracy loss and it dominates
+the variance if hidden inside a standard deviation.</p>
+<h2>7. Results</h2>
+<h3>7.1 Performance channel</h3>
+<p>Balanced accuracy, AUC, macro-F1 on the positive class, worst-client accuracy, convergence round
+(first round reaching 95% of the run's own best), and collapsed-seed count. 8 seeds, mean&plusmn;std.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Attack</th>
+<th style="text-align: left;">Method</th>
+<th style="text-align: center;">Balanced acc</th>
+<th style="text-align: center;">AUC</th>
+<th style="text-align: center;">F1(pos)</th>
+<th style="text-align: center;">Worst-client</th>
+<th style="text-align: center;">Conv.</th>
+<th style="text-align: center;">Collapsed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">none</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.773±0.024</strong></td>
+<td style="text-align: center;">0.867</td>
+<td style="text-align: center;"><strong>0.794</strong></td>
+<td style="text-align: center;"><strong>0.636</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><strong>0/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">none</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.677±0.138</td>
+<td style="text-align: center;"><strong>0.869</strong></td>
+<td style="text-align: center;">0.679</td>
+<td style="text-align: center;">0.421</td>
+<td style="text-align: center;">6</td>
+<td style="text-align: center;">3/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">zero_update</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.749±0.037</strong></td>
+<td style="text-align: center;">0.864</td>
+<td style="text-align: center;"><strong>0.794</strong></td>
+<td style="text-align: center;"><strong>0.568</strong></td>
+<td style="text-align: center;">6</td>
+<td style="text-align: center;"><strong>0/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">zero_update</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.671±0.124</td>
+<td style="text-align: center;"><strong>0.865</strong></td>
+<td style="text-align: center;">0.602</td>
+<td style="text-align: center;">0.407</td>
+<td style="text-align: center;">10</td>
+<td style="text-align: center;">2/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">stale_model</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;">0.500±0.000</td>
+<td style="text-align: center;"><strong>0.780</strong></td>
+<td style="text-align: center;">0.370</td>
+<td style="text-align: center;">0.023</td>
+<td style="text-align: center;">7</td>
+<td style="text-align: center;">8/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">stale_model</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.500±0.000</td>
+<td style="text-align: center;">0.767</td>
+<td style="text-align: center;">0.367</td>
+<td style="text-align: center;">0.023</td>
+<td style="text-align: center;">5</td>
+<td style="text-align: center;">8/8</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>scaled_global</strong></td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;">0.500±0.000</td>
+<td style="text-align: center;">0.500</td>
+<td style="text-align: center;">0.000</td>
+<td style="text-align: center;">0.000</td>
+<td style="text-align: center;">2</td>
+<td style="text-align: center;">8/8</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>scaled_global</strong></td>
+<td style="text-align: left;"><strong>DCFI</strong></td>
+<td style="text-align: center;"><strong>0.557±0.089</strong></td>
+<td style="text-align: center;"><strong>0.610</strong></td>
+<td style="text-align: center;"><strong>0.510</strong></td>
+<td style="text-align: center;"><strong>0.150</strong></td>
+<td style="text-align: center;">6</td>
+<td style="text-align: center;"><strong>5/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">random_update</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.745±0.042</strong></td>
+<td style="text-align: center;"><strong>0.859</strong></td>
+<td style="text-align: center;"><strong>0.786</strong></td>
+<td style="text-align: center;"><strong>0.567</strong></td>
+<td style="text-align: center;">6</td>
+<td style="text-align: center;"><strong>0/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">random_update</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.713±0.096</td>
+<td style="text-align: center;">0.777</td>
+<td style="text-align: center;">0.697</td>
+<td style="text-align: center;">0.478</td>
+<td style="text-align: center;">10</td>
+<td style="text-align: center;">1/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">copied_update</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.771±0.014</strong></td>
+<td style="text-align: center;"><strong>0.859</strong></td>
+<td style="text-align: center;"><strong>0.788</strong></td>
+<td style="text-align: center;"><strong>0.616</strong></td>
+<td style="text-align: center;">5</td>
+<td style="text-align: center;"><strong>0/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">copied_update</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.649±0.102</td>
+<td style="text-align: center;">0.852</td>
+<td style="text-align: center;">0.673</td>
+<td style="text-align: center;">0.348</td>
+<td style="text-align: center;">7</td>
+<td style="text-align: center;">2/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">low_effort</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.765±0.025</strong></td>
+<td style="text-align: center;"><strong>0.865</strong></td>
+<td style="text-align: center;"><strong>0.812</strong></td>
+<td style="text-align: center;"><strong>0.612</strong></td>
+<td style="text-align: center;">6</td>
+<td style="text-align: center;"><strong>0/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">low_effort</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.644±0.109</td>
+<td style="text-align: center;">0.805</td>
+<td style="text-align: center;">0.683</td>
+<td style="text-align: center;">0.338</td>
+<td style="text-align: center;">11</td>
+<td style="text-align: center;">2/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">label_flip</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.686±0.115</strong></td>
+<td style="text-align: center;"><strong>0.848</strong></td>
+<td style="text-align: center;"><strong>0.754</strong></td>
+<td style="text-align: center;"><strong>0.438</strong></td>
+<td style="text-align: center;">6</td>
+<td style="text-align: center;">2/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">label_flip</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.648±0.118</td>
+<td style="text-align: center;">0.802</td>
+<td style="text-align: center;">0.574</td>
+<td style="text-align: center;">0.339</td>
+<td style="text-align: center;">10</td>
+<td style="text-align: center;">2/8</td>
+</tr>
+<tr>
+<td style="text-align: left;">norm_inflation</td>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;"><strong>0.739±0.043</strong></td>
+<td style="text-align: center;"><strong>0.865</strong></td>
+<td style="text-align: center;"><strong>0.766</strong></td>
+<td style="text-align: center;"><strong>0.533</strong></td>
+<td style="text-align: center;">4</td>
+<td style="text-align: center;"><strong>0/8</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">norm_inflation</td>
+<td style="text-align: left;">DCFI</td>
+<td style="text-align: center;">0.679±0.118</td>
+<td style="text-align: center;">0.738</td>
+<td style="text-align: center;">0.747</td>
+<td style="text-align: center;">0.391</td>
+<td style="text-align: center;">9</td>
+<td style="text-align: center;">2/8</td>
+</tr>
+</tbody>
+</table>
+<div class="warn">
+<b>Verdict on the training channel: the safety gate is a net negative.</b>
+<ul>
+<li><b>DCFI wins on 1 of 9 conditions</b> (<code>scaled_global</code>) and loses on 8.</li>
+<li><b>DCFI collapses 3 of 8 seeds with no adversaries at all.</b> A safety mechanism that damages
+the model it is protecting is not a safety mechanism.</li>
+<li><b>FedDyn is already robust to six of the eight attacks</b> on its own &mdash; 0/8 collapses on
+zero_update, random_update, copied_update, low_effort and norm_inflation. The gate is defending
+against threats the base optimiser had already absorbed, and paying accuracy for the privilege.</li>
+<li>DCFI also converges more slowly (9&ndash;11 rounds vs 4&ndash;6), consistent with the gate
+repeatedly discarding usable updates.</li>
+</ul>
+</div>
+
+<div class="callout">
+<b>Two attacks defeat both methods.</b> <code>stale_model</code> and <code>scaled_global</code>
+collapse FedDyn in 8/8 seeds. DCFI partially rescues <code>scaled_global</code> (5/8, +0.057
+balanced accuracy) and does nothing for <code>stale_model</code>. Note that on
+<code>stale_model</code> AUC stays at 0.78 while balanced accuracy sits at exactly 0.500 &mdash; the
+model still ranks patients correctly but predicts a single class at the 0.5 threshold. That is a
+<b>calibration collapse, not an information collapse</b>, and it is likely recoverable by threshold
+selection (&sect;7.4).
+</div>
+
+<h3>7.2 Reward-fairness metrics</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Attack</th>
+<th style="text-align: center;">Adversary reward share</th>
+<th style="text-align: center;">&rho;(reward, LOO)</th>
+<th style="text-align: center;">MAE</th>
+<th style="text-align: center;">Reward-to-cost</th>
+<th style="text-align: center;">IR rate</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">none</td>
+<td style="text-align: center;"><strong>0.00%</strong></td>
+<td style="text-align: center;">0.165±0.470</td>
+<td style="text-align: center;">0.320</td>
+<td style="text-align: center;">3.8</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">zero_update</td>
+<td style="text-align: center;"><strong>0.82%</strong></td>
+<td style="text-align: center;">0.245±0.339</td>
+<td style="text-align: center;">0.251</td>
+<td style="text-align: center;">4.5</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">stale_model</td>
+<td style="text-align: center;">31.75%</td>
+<td style="text-align: center;">0.083±0.373</td>
+<td style="text-align: center;">0.276</td>
+<td style="text-align: center;">4.1</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">scaled_global</td>
+<td style="text-align: center;">6.25%</td>
+<td style="text-align: center;">−0.113±0.482</td>
+<td style="text-align: center;">0.285</td>
+<td style="text-align: center;">4.5</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">random_update</td>
+<td style="text-align: center;">9.12%</td>
+<td style="text-align: center;">0.270±0.369</td>
+<td style="text-align: center;">0.176</td>
+<td style="text-align: center;">4.6</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">copied_update</td>
+<td style="text-align: center;"><strong>3.33%</strong></td>
+<td style="text-align: center;">0.158±0.367</td>
+<td style="text-align: center;">0.334</td>
+<td style="text-align: center;">4.4</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">low_effort</td>
+<td style="text-align: center;">33.53%</td>
+<td style="text-align: center;">0.129±0.315</td>
+<td style="text-align: center;">0.349</td>
+<td style="text-align: center;">4.1</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">label_flip</td>
+<td style="text-align: center;">37.38%</td>
+<td style="text-align: center;">0.241±0.381</td>
+<td style="text-align: center;">0.510</td>
+<td style="text-align: center;">4.1</td>
+<td style="text-align: center;"><strong>100%</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">norm_inflation</td>
+<td style="text-align: center;">37.10%</td>
+<td style="text-align: center;">0.091±0.472</td>
+<td style="text-align: center;">0.443</td>
+<td style="text-align: center;">3.9</td>
+<td style="text-align: center;">98%</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Adversary starvation splits cleanly into two groups</strong>, and the split is interpretable:</p>
+<ul>
+<li><strong>Starved (0.8&ndash;9.1%)</strong>: <code>zero_update</code>, <code>copied_update</code>, <code>scaled_global</code>, <code>random_update</code>
+  &mdash; adversaries whose update is <em>structurally impossible</em> for an honest client to produce.</li>
+<li><strong>Not starved (31.8&ndash;37.4%, i.e. their full 40% fair share)</strong>: <code>stale_model</code>, <code>low_effort</code>,
+  <code>label_flip</code>, <code>norm_inflation</code> &mdash; adversaries that perform <em>some genuine training</em>, so their
+  updates lie inside the honest distribution.</li>
+</ul>
+<p><strong>Individual rationality holds at 98&ndash;100%</strong> and <strong>reward-to-cost is 3.8&ndash;4.6</strong> across
+every condition: honest participants are always paid more than their cost. This is the base-payment
+term working as designed. <strong>Budget balance is exact</strong> (residual 0 by construction).</p>
+<p><strong>Reward&ndash;contribution fidelity fails.</strong> &rho; ranges 0.08&ndash;0.27 with standard deviations
+of 0.30&ndash;0.48 &mdash; the confidence intervals span zero everywhere, including the
+adversary-free condition (0.165 ± 0.470). This is consistent with the independent leave-one-out
+audit reported in &sect;7.5.</p>
+<h3>7.3 Fairness metrics</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Attack</th>
+<th style="text-align: center;">Jain (useful-client rewards)</th>
+<th style="text-align: center;">Jain (selection frequency)</th>
+<th style="text-align: center;">&rho;(reward, client size)</th>
+<th style="text-align: center;">Minority-class recall (worst-client)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">none</td>
+<td style="text-align: center;">0.871±0.054</td>
+<td style="text-align: center;"><strong>0.972±0.012</strong></td>
+<td style="text-align: center;">0.363</td>
+<td style="text-align: center;">0.421</td>
+</tr>
+<tr>
+<td style="text-align: left;">zero_update</td>
+<td style="text-align: center;">0.863±0.065</td>
+<td style="text-align: center;">0.759±0.023</td>
+<td style="text-align: center;">0.200</td>
+<td style="text-align: center;">0.407</td>
+</tr>
+<tr>
+<td style="text-align: left;">stale_model</td>
+<td style="text-align: center;"><strong>0.947±0.038</strong></td>
+<td style="text-align: center;">0.942±0.030</td>
+<td style="text-align: center;">0.333</td>
+<td style="text-align: center;">0.023</td>
+</tr>
+<tr>
+<td style="text-align: left;">scaled_global</td>
+<td style="text-align: center;">0.914±0.067</td>
+<td style="text-align: center;">0.807±0.054</td>
+<td style="text-align: center;">0.173</td>
+<td style="text-align: center;">0.150</td>
+</tr>
+<tr>
+<td style="text-align: left;">random_update</td>
+<td style="text-align: center;">0.892±0.053</td>
+<td style="text-align: center;">0.884±0.037</td>
+<td style="text-align: center;">0.178</td>
+<td style="text-align: center;">0.478</td>
+</tr>
+<tr>
+<td style="text-align: left;">copied_update</td>
+<td style="text-align: center;">0.845±0.102</td>
+<td style="text-align: center;">0.778±0.045</td>
+<td style="text-align: center;">0.161</td>
+<td style="text-align: center;">0.348</td>
+</tr>
+<tr>
+<td style="text-align: left;">low_effort</td>
+<td style="text-align: center;">0.886±0.117</td>
+<td style="text-align: center;">0.950±0.055</td>
+<td style="text-align: center;">0.222</td>
+<td style="text-align: center;">0.338</td>
+</tr>
+<tr>
+<td style="text-align: left;">label_flip</td>
+<td style="text-align: center;">0.917±0.045</td>
+<td style="text-align: center;"><strong>0.978±0.009</strong></td>
+<td style="text-align: center;">0.350</td>
+<td style="text-align: center;">0.339</td>
+</tr>
+<tr>
+<td style="text-align: left;">norm_inflation</td>
+<td style="text-align: center;">0.883±0.137</td>
+<td style="text-align: center;">0.946±0.064</td>
+<td style="text-align: center;">0.284</td>
+<td style="text-align: center;">0.391</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Jain on useful-client rewards 0.85&ndash;0.95</strong> &mdash; reward is distributed evenly among honest
+  contributors rather than concentrating on a few.</li>
+<li><strong>Selection-frequency Jain 0.76&ndash;0.98</strong> &mdash; the under-participation bonus works. The lower
+  values (0.76&ndash;0.81) occur exactly where quarantine is active, which is correct behaviour:
+  excluded adversaries <em>should</em> be selected less.</li>
+<li><strong>&rho;(reward, client size) 0.16&ndash;0.36</strong> &mdash; reward is only weakly related to dataset
+  size, so the mechanism is not a size proxy in disguise. This is the one respect in which it
+  clearly improves on paying by row count.</li>
+</ul>
+<h3>7.4 Beyond-accuracy diagnostic (why the accuracy gap is misleading)</h3>
+<p>From the earlier sweep at 40% label noise, comparing the contribution-weighted method against
+FedDyn on metrics that separate <em>discriminative power</em> from <em>threshold placement</em>:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Metric</th>
+<th style="text-align: center;">Proposed</th>
+<th style="text-align: center;">FedDyn</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">AUPRC</td>
+<td style="text-align: center;"><strong>0.878</strong></td>
+<td style="text-align: center;">0.878</td>
+</tr>
+<tr>
+<td style="text-align: left;">AUC</td>
+<td style="text-align: center;">0.849</td>
+<td style="text-align: center;">0.850</td>
+</tr>
+<tr>
+<td style="text-align: left;">Balanced accuracy at the <strong>best</strong> threshold</td>
+<td style="text-align: center;"><strong>0.779</strong></td>
+<td style="text-align: center;">0.780</td>
+</tr>
+<tr>
+<td style="text-align: left;">Balanced accuracy at the default 0.5</td>
+<td style="text-align: center;">0.665</td>
+<td style="text-align: center;"><strong>0.697</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">Loss attributable to threshold placement</td>
+<td style="text-align: center;">+0.113</td>
+<td style="text-align: center;">+0.083</td>
+</tr>
+</tbody>
+</table>
+<p>On every measure of discriminative power the two are <strong>statistically identical</strong>. The entire
+accuracy deficit is <em>where the decision boundary sits</em>, not what the model knows. <code>bacc_opt</code> uses an
+oracle threshold and is therefore an upper bound &mdash; realising it requires selecting the
+threshold on validation data, which remains untested and is the single highest-value experiment
+outstanding.</p>
+<h3>7.5 Independent audit: reward fidelity against full leave-one-out</h3>
+<p>390 dedicated federations (one full plus ten leave-one-out per setting, 10 seeds × 3 noise levels)
+established ground-truth contribution as <code>LOO_k = V(N) − V(N\{k})</code> measured under <strong>FedAvg</strong>
+(mechanism-neutral, to avoid defining truth by the weighting under test).</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Noise</th>
+<th style="text-align: center;">Our reward</th>
+<th style="text-align: center;">Pay-by-size</th>
+<th style="text-align: center;">Equal-split</th>
+<th style="text-align: center;">Raw CSSV</th>
+<th style="text-align: center;">Margin</th>
+<th style="text-align: center;">Bar</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">0%</td>
+<td style="text-align: center;">+0.287</td>
+<td style="text-align: center;"><strong>+0.439</strong></td>
+<td style="text-align: center;">+0.412</td>
+<td style="text-align: center;"><strong>+0.465</strong></td>
+<td style="text-align: center;"><strong>−0.178</strong></td>
+<td style="text-align: center;">+0.15</td>
+</tr>
+<tr>
+<td style="text-align: left;">20%</td>
+<td style="text-align: center;">+0.328</td>
+<td style="text-align: center;">+0.325</td>
+<td style="text-align: center;">+0.317</td>
+<td style="text-align: center;">+0.274</td>
+<td style="text-align: center;"><strong>+0.002</strong></td>
+<td style="text-align: center;">+0.15</td>
+</tr>
+<tr>
+<td style="text-align: left;">40%</td>
+<td style="text-align: center;">+0.123</td>
+<td style="text-align: center;">+0.058</td>
+<td style="text-align: center;">+0.042</td>
+<td style="text-align: center;">+0.005</td>
+<td style="text-align: center;"><strong>+0.065</strong></td>
+<td style="text-align: center;">+0.15</td>
+</tr>
+</tbody>
+</table>
+<p><strong>On clean data our reward is worse than simply paying by dataset size.</strong> The pre-registered
+criterion (beat every baseline by &ge;0.15) fails at all three noise levels. The ground truth is
+sound &mdash; corrupted clients have mean LOO value −0.029 versus +0.020 for clean.</p>
+<p>The explanation is intuitive in hindsight: <strong>when every participant is honest, contribution genuinely
+is roughly proportional to how much data they hold</strong>, so size-proportional payment is already a
+strong rule and a quality signal only adds noise on top of it. Our detector's advantage exists only
+when clients misbehave.</p>
+<div class="warn">
+<b>Stated caveat, not an excuse.</b> The measurement is underpowered at 20&ndash;40% noise: the LOO
+effect size is ~0.02&ndash;0.03 balanced accuracy while seed-to-seed variance at 40% noise is
+&plusmn;0.107, and each <code>V(N\{k})</code> is a single run &mdash; training noise is roughly 4&times;
+the signal. Averaging each LOO value over repeated seeds would settle it (~10&times; compute). It
+would <b>not</b> rescue the clean-data column, which is well measured and a clear loss.
+</div>
+
+<h3>7.6 Measured impossibility: why inflation cannot be caught by magnitude</h3>
+<p>Under Dirichlet &alpha;=0.3, honest effort density (<code>‖Δ‖/n_k</code>) has <strong>log-standard-deviation 1.014</strong>
+&mdash; ordinary client-to-client variation spans a factor of <strong>2.76× at one standard deviation</strong>.</p>
+<p>A 3× inflation is <code>log 3 = 1.099</code>, i.e. <strong>1.08 sd</strong>. It sits <em>inside</em> the honest band. Separating at
+2 sd would require the attacker to inflate beyond <strong>7.6×</strong>, and no attacker is obliged to. Measured
+consequence: a gate tolerant enough to spare honest clients (tolerance <code>log 2</code>) still excluded
+<strong>34&ndash;39% of honest observations</strong> while catching only <strong>44&ndash;50%</strong> of inflating clients.</p>
+<div class="callout">
+<b>This is a property of non-IID federation, not of our implementation.</b> Update-magnitude scoring
+cannot detect inflation smaller than the natural spread of honest effort. With strongly non-IID
+clients that spread is wide, so the exploitable range is wide. Two further measured contributors:
+at a 40% adversary fraction, adversaries are a <b>majority of the 5-client active set in 22% of
+rounds</b>, so the peer median is itself adversarial; and a pooled running reference is <i>worse</i>,
+because the accumulated history becomes ~40% contaminated and drifts toward the attack (AUC
+0.67 &rarr; 0.53 when tried).
+</div>
+
+<h2>8. Design corrections forced by measurement</h2>
+<p>Five components required redesign after measurement contradicted the initial specification. Each is
+recorded because the failure mode is itself a finding.</p>
+<h3>8.1 Reliability must not feed back into risk</h3>
+<p>The first implementation added <code>2.0 · (1 − reliability)</code> to the risk score, so a history of
+suspicion raised current risk. This creates a <strong>death spiral</strong>: one unlucky flag lowers reliability,
+which raises risk, which flags again. Measured <strong>62% false-flag rate on honest clients</strong>. Reliability
+now governs quarantine and reward only.</p>
+<h3>8.2 Honest updates are already highly self-similar</h3>
+<p>The replay signature was initially <code>cos &gt; 0.9</code> against the client's own previous delta. Measurement
+showed honest consecutive updates average <strong>cosine ≈0.98</strong> &mdash; local data is fixed and the model
+is converging, so honest updates <em>are</em> nearly repeated. That threshold flagged <strong>82% of honest
+clients</strong>. A genuine replay resends the same vector, so the signature is cosine ≈1 to
+floating-point precision; the threshold is now 0.999.</p>
+<h3>8.3 Median/MAD collapses on five points</h3>
+<p>Median/MAD was chosen for robustness to ~40% contamination. But on the ~5 active clients of one
+round the MAD collapses whenever three happen to cluster, and z-scores explode &mdash; <strong>15 of 22
+false HIGH flags in a fully clean run</strong>. The scale is now floored relative to the median magnitude: a
+spread estimate from five points does not justify an unbounded score.</p>
+<h3>8.4 The gate needs a quorum floor</h3>
+<p>Without a floor the gate excluded so much of the active set that FedDyn aggregated over one or two
+clients and destabilised &mdash; <strong>3 of 5 clean-data seeds collapsed to single-class prediction purely
+from false exclusions</strong>. The gate may now never drop the active set below 60%; excess high-risk
+clients are demoted to clipped, least-risky first.</p>
+<h3>8.5 "Repeatedly high-risk" must mean consecutive</h3>
+<p>Exclusion now requires either an unambiguous signature or corroboration across rounds. A first
+implementation used a <em>cumulative</em> suspicion counter; it never forgets, so an honest client that
+tripped the soft score once was excluded on every later trip and clean accuracy degraded over
+training (0.709 &rarr; 0.629). The counter now resets on any clean round.</p>
+<h3>8.6 A bug worth recording</h3>
+<p><code>stale_model</code> and <code>copied_update</code> originally returned <em>before</em> training, so their replay cache was
+never populated and both silently degenerated into <code>zero_update</code> &mdash; producing three identical
+rows in the results table. They now train once to seed the cache, then replay. After the fix,
+<code>stale_model</code> proved to be <strong>the most destructive attack in the suite</strong>. The lesson is that an attack
+which appears to be handled may simply not be firing.</p>
+<h2>9. Validity checks</h2>
+<h3>9.1 Baselines are unmodified</h3>
+<p>The DCFI code paths are inert unless <code>--method dcfi</code>. After the refactor that introduced the attack
+modes, an existing configuration was re-run and compared against its stored log: <strong>bit-identical on
+all six previously reported metrics</strong> (balanced accuracy, accuracy, AUC, Jain, worst-client, loss).
+All 170 runs of the earlier sweep were then re-verified against their backup before it was deleted:
+<strong>170 runs checked, 0 discrepancies</strong>.</p>
+<h3>9.2 New metrics validated externally</h3>
+<p><code>f1_pos</code>, <code>brier</code> and <code>auc</code> match scikit-learn exactly; <code>auprc</code> agrees within 0.4% (tie-handling in
+the step-wise average-precision estimator); <code>bacc_opt</code> was cross-checked against a brute-force
+threshold sweep.</p>
+<h3>9.3 The cost is the gate, not the selection policy</h3>
+<p>Ablation on clean data, 5 seeds:</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Configuration</th>
+<th style="text-align: center;">Balanced accuracy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">FedDyn</td>
+<td style="text-align: center;">0.768 ± 0.028</td>
+</tr>
+<tr>
+<td style="text-align: left;">DCFI, <strong>gate disabled</strong> (selection + reward only)</td>
+<td style="text-align: center;"><strong>0.757 ± 0.045</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">DCFI, full</td>
+<td style="text-align: center;">0.591 ± 0.119</td>
+</tr>
+</tbody>
+</table>
+<p>With the gate disabled DCFI matches FedDyn. <strong>The entire clean-data regression is attributable to the
+safety gate</strong>, and neither the selection policy nor the reward channel harms the model &mdash; which
+is exactly what the dual-channel separation was designed to guarantee.</p>
+<h3>9.4 Validation/test separation</h3>
+<p>Utility estimation uses a 30% validation split carved from the test pool and <strong>disjoint</strong> from the
+reported test set, so the mechanism cannot optimise against reported numbers.</p>
+<h2>10. Verdict and recommendation</h2>
+<div class="novelty">
+<b>What works &mdash; the reward channel.</b>
+<ol>
+<li><b>Individual rationality</b> 98&ndash;100% and <b>reward-to-cost 3.8&ndash;4.6</b> across all
+nine conditions: honest participants are always paid above cost.</li>
+<li><b>Exact budget balance</b> by construction.</li>
+<li><b>Fairness</b>: Jain 0.85&ndash;0.95 on useful-client rewards; selection-frequency Jain
+0.76&ndash;0.98 from the under-participation bonus.</li>
+<li><b>Adversary starvation for four of eight attacks</b>, down to 0.8&ndash;9.1% of budget against
+a 40% fair share &mdash; and the four it handles are exactly those producing structurally impossible
+updates.</li>
+<li><b>Reward is not a size proxy</b>: &rho;(reward, size) only 0.16&ndash;0.36.</li>
+<li><b>The dual-channel separation is validated</b>: &sect;9.3 shows the reward channel imposes no
+accuracy cost, which was the design's central promise.</li>
+</ol>
+</div>
+
+<div class="warn">
+<b>What does not work.</b>
+<ol>
+<li><b>The safety gate</b> loses on 8 of 9 conditions and collapses 3/8 seeds with no adversaries
+present. FedDyn already absorbs six of the eight attacks unaided.</li>
+<li><b>Reward&ndash;contribution fidelity</b>: &rho; 0.08&ndash;0.27 with CIs spanning zero, and it
+loses to pay-by-size on clean data in the independent LOO audit.</li>
+<li><b>Four attacks are not starved</b> &mdash; any adversary that performs genuine training lands
+inside the honest distribution.</li>
+<li><b>Two attacks collapse both methods</b>: <code>stale_model</code> and
+<code>scaled_global</code>, 8/8 seeds.</li>
+</ol>
+</div>
+
+<p><strong>Recommendation.</strong></p>
+<ol>
+<li><strong>Retain the reward channel and disable the gate by default.</strong> This is what the measurements
+   support: the reward channel delivers the economic properties at zero accuracy cost, while the
+   gate costs accuracy on almost every condition. Enable it selectively for the two attacks that
+   genuinely break FedDyn.</li>
+<li><strong>Run threshold calibration on a validation split.</strong> &sect;7.4 shows discriminative power is intact
+   and the loss is threshold placement; on <code>stale_model</code>, AUC 0.78 alongside balanced accuracy 0.500
+   suggests the collapse is calibration, not information. Cheapest high-value experiment remaining.</li>
+<li><strong>Treat <code>stale_model</code> as the open problem.</strong> It is the most destructive attack found, it defeats
+   both methods, and a freshness/staleness check (comparing the submitted model against the round
+   index it was derived from) is a natural and cheap defence that we have not yet tried.</li>
+<li><strong>Re-run the LOO audit with seed-averaged ground truth</strong> to settle whether the 20&ndash;40%
+   columns are a genuine failure or a power artefact.</li>
+<li><strong>Report the negative results.</strong> The replicated finding that contribution-weighted aggregation
+   does not beat FedDyn, the &sect;7.6 impossibility result, and the gate's failure are each
+   publishable as cautionary characterisations, and are more defensible than a contested accuracy
+   claim.</li>
+</ol>
+<h2>11. Limitations</h2>
+<ul>
+<li>One dataset, one architecture (2-layer MLP), one participation regime (N=10, m=5).</li>
+<li>Adversary fraction fixed at 40% for the eight-attack sweep; the free-rider study swept
+  10/20/30/40% but only for four attacks.</li>
+<li><code>norm_inflation</code> tested at a single factor (3×); the 7.6× detectability threshold is derived from
+  the measured honest spread rather than swept directly.</li>
+<li>Combined adversaries (label noise <em>and</em> free-riding simultaneously) untested.</li>
+<li><code>bacc_opt</code> uses an oracle threshold and is an upper bound.</li>
+<li>Risk thresholds were set from the honest spread but adjusted across five design iterations on
+  5&ndash;8 seeds; further tuning was deliberately stopped to avoid fitting the seeds rather than
+  the problem.</li>
+<li>A single global feature scaler is fitted on the pooled training split (mild centralisation).</li>
+</ul>
+<h2>12. Reproduction</h2>
+<pre><code class="language-bash"># 0. Data (Kaggle-licensed, not vendored)
+export KAGGLE_CONFIG_DIR=$(pwd)
+kaggle datasets download -d hopesb/student-depression-dataset \
+    -p data_cache/mentalhealth --unzip
+
+# 1. Centralized ceiling -- confirms discriminative headroom exists
+python3 scripts/tabular_ceiling.py
+
+# 2. Baseline sweep + beyond-accuracy metrics        (170 runs, ~15 min)
+python3 scripts/run_tabular_sweep.py --seeds 0 1 2 3 4 5 6 7 8 9
+python3 scripts/aggregate_tabular.py
+
+# 3. Reward fidelity vs leave-one-out ground truth   (390 runs, ~35 min)
+python3 scripts/loo_reward_fidelity.py --seeds 0 1 2 3 4 5 6 7 8 9 \
+    --noises 0.0 0.2 0.4
+
+# 4. Free-rider ladder x fraction breakdown curve    (160 runs, ~15 min)
+python3 scripts/freerider_incentive.py --seeds 0 1 2 3 4 5 6 7 8 9 \
+    --modes f1 f2 f3 f4 --fracs 0.1 0.2 0.3 0.4
+
+# 5. DCFI-UPA: 8 attacks x 2 methods x 8 seeds       (144 runs, ~40 min)
+python3 scripts/run_dcfi.py --seeds 0 1 2 3 4 5 6 7
+</code></pre>
+<p><strong>Implementation map</strong></p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Component</th>
+<th style="text-align: left;">Location</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">Risk scorer, safety gate, reward channel, DCFI selection</td>
+<td style="text-align: left;"><code>federated/dcfi.py</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">Round orchestration, utility/fairness estimation, val split</td>
+<td style="text-align: left;"><code>federated/server.py</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">Eight attack behaviours</td>
+<td style="text-align: left;"><code>federated/client.py</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">Adversary assignment (disjoint from label noise)</td>
+<td style="text-align: left;"><code>data/dataset.py</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">All DCFI knobs, <code>dcfi</code> method preset</td>
+<td style="text-align: left;"><code>config.py</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">Tabular loader, feature regimes</td>
+<td style="text-align: left;"><code>data/tabular.py</code>, <code>models/mlp.py</code></td>
+</tr>
+<tr>
+<td style="text-align: left;">Experiment drivers and the 15 metrics</td>
+<td style="text-align: left;"><code>scripts/run_dcfi.py</code> and siblings</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Results</strong> &mdash; <code>studies/tabular_mentalhealth/</code>: <code>tables/</code> (7 generated tables),
+<code>report/</code> (this and prior reports), <code>logs*/</code> (864 raw run logs with per-round risk scores, tiers,
+actions, utilities, rewards and reliabilities).</p>
+<h2>13. Key parameters</h2>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Parameter</th>
+<th style="text-align: center;">Value</th>
+<th style="text-align: left;">Basis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><code>dcfi_w_loss</code> / <code>w_geometry</code></td>
+<td style="text-align: center;">0.5 / 1.0</td>
+<td style="text-align: left;">loss signal is weak alone under clean labels (&sect;3.2)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_medium_risk</code> / <code>high_risk</code></td>
+<td style="text-align: center;">2.0 / 4.0</td>
+<td style="text-align: left;">raised from 1.0/2.5 after 62% false-flag measurement</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_gross_ratio</code></td>
+<td style="text-align: center;">20×</td>
+<td style="text-align: left;">≈3 sd of the measured honest spread (log-sd 1.014)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_replay_cos</code></td>
+<td style="text-align: center;">0.999</td>
+<td style="text-align: left;">honest self-similarity averages 0.98 (&sect;8.2)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_min_keep_frac</code></td>
+<td style="text-align: center;">0.6</td>
+<td style="text-align: left;">quorum floor; below this FedDyn destabilises (&sect;8.4)</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_quarantine_after</code> / <code>_rounds</code></td>
+<td style="text-align: center;">2 / 5</td>
+<td style="text-align: left;">consecutive high-risk rounds</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_w_base</code> / <code>_utility</code> / <code>_fairness</code></td>
+<td style="text-align: center;">0.2 / 0.5 / 0.3</td>
+<td style="text-align: left;">base term underwrites individual rationality</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_reward_cap</code> / <code>_holdback</code></td>
+<td style="text-align: center;">0.4 / 0.2</td>
+<td style="text-align: left;">bounds concentration; delays cash-out</td>
+</tr>
+<tr>
+<td style="text-align: left;"><code>dcfi_val_frac</code></td>
+<td style="text-align: center;">0.3</td>
+<td style="text-align: left;">disjoint from the reported test split</td>
+</tr>
+</tbody>
+</table></body></html>

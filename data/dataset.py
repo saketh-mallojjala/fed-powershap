@@ -12,6 +12,7 @@ from torchvision import datasets, transforms
 from .aptos import load_aptos
 from .brats import load_brats
 from .medmnist_loader import MEDMNIST_REGISTRY, load_medmnist
+from .tabular import TABULAR_REGISTRY, load_tabular
 
 
 def _get_transforms(dataset: str, image_size: int = 224) -> Tuple[transforms.Compose, transforms.Compose]:
@@ -81,7 +82,15 @@ def _get_transforms(dataset: str, image_size: int = 224) -> Tuple[transforms.Com
     return train_tf, test_tf
 
 
-def _load_raw(dataset: str, root: str, image_size: int = 224, seed: int = 42):
+def _load_raw(dataset: str, root: str, image_size: int = 224, seed: int = 42,
+              feature_regime: str = "screening"):
+    # Tabular sets have no transforms at all, so they short-circuit before
+    # _get_transforms (which only knows about image datasets).
+    if dataset in TABULAR_REGISTRY:
+        train, test, _ = load_tabular(
+            dataset, root=root, seed=seed, feature_regime=feature_regime
+        )
+        return train, test
     train_tf, test_tf = _get_transforms(dataset, image_size=image_size)
     os.makedirs(root, exist_ok=True)
     if dataset == "cifar10":
@@ -126,7 +135,8 @@ class NoisyLabelDataset(Dataset):
         return x, y
 
 
-def _load_train_eval_view(dataset: str, root: str, image_size: int, seed: int):
+def _load_train_eval_view(dataset: str, root: str, image_size: int, seed: int,
+                          feature_regime: str = "screening"):
     """Return the *training* pool with **test** transforms (no augmentation).
 
     Used to build per-client local test sets for fairness evaluation: same
@@ -134,6 +144,12 @@ def _load_train_eval_view(dataset: str, root: str, image_size: int, seed: int):
     The train/test split inside each loader is seeded, so item ordering matches
     the augmenting view loaded by ``_load_raw``.
     """
+    if dataset in TABULAR_REGISTRY:
+        # No augmentation on tabular data, so the train view *is* the eval view.
+        train, _, _ = load_tabular(
+            dataset, root=root, seed=seed, feature_regime=feature_regime
+        )
+        return train
     _, test_tf = _get_transforms(dataset, image_size=image_size)
     if dataset == "cifar10":
         return datasets.CIFAR10(root, train=True, download=False, transform=test_tf)
@@ -202,6 +218,7 @@ def build_federated_datasets(
         cfg.data_root,
         image_size=getattr(cfg, "image_size", 224),
         seed=cfg.seed,
+        feature_regime=getattr(cfg, "feature_regime", "screening"),
     )
     if hasattr(train, "targets"):
         labels = np.array(train.targets)
@@ -232,6 +249,7 @@ def build_federated_datasets(
         train_eval = _load_train_eval_view(
             cfg.dataset, cfg.data_root,
             image_size=getattr(cfg, "image_size", 224), seed=cfg.seed,
+            feature_regime=getattr(cfg, "feature_regime", "screening"),
         )
 
     rng = np.random.default_rng(cfg.seed + 1)  # offset so split != partition rng
@@ -276,8 +294,42 @@ def build_federated_datasets(
                 choices = [c for c in range(cfg.num_classes) if c != true]
                 remap[int(p)] = int(nrng.choice(choices))
             client_subsets[k] = NoisyLabelDataset(client_subsets[k], remap)
-        print(f"[data] injected label noise: clients {sorted(noisy_ids.tolist())} "
+        # Record which clients were corrupted so the run log can carry it; the
+        # mechanism analysis (does the detector down-weight them?) needs ground
+        # truth and should not have to re-derive it from the RNG.
+        cfg.noisy_client_ids = sorted(int(i) for i in noisy_ids)
+        print(f"[data] injected label noise: clients {cfg.noisy_client_ids} "
               f"@ rate {noise_rate}")
+
+    # Free-rider clients (proposal §9.3). Chosen DISJOINT from the label-noise
+    # clients so the two adversary types never overlap and their detection rates
+    # can be attributed separately. The behaviour itself lives in Client.
+    fr_frac = float(getattr(cfg, "freerider_frac", 0.0))
+    fr_mode = str(getattr(cfg, "freerider_mode", "none"))
+    cfg.freerider_client_ids = []
+    cfg.freerider_assignment = {}
+    if fr_frac > 0.0 and fr_mode != "none":
+        frng = np.random.default_rng(cfg.seed + 3)
+        already = set(getattr(cfg, "noisy_client_ids", []))
+        pool = [i for i in range(cfg.num_clients) if i not in already]
+        n_fr = max(1, int(round(cfg.num_clients * fr_frac)))
+        if n_fr > len(pool):
+            raise ValueError(
+                f"freerider_frac={fr_frac} needs {n_fr} clients but only "
+                f"{len(pool)} are free of label noise")
+        chosen = sorted(int(i) for i in frng.choice(pool, size=n_fr, replace=False))
+        cfg.freerider_client_ids = chosen
+        if fr_mode == "mixed":
+            # One adversary of each type, cycled, so a single run exercises the
+            # whole taxonomy at once and the per-attack outcomes stay separable
+            # via freerider_assignment.
+            from federated.dcfi import ATTACKS
+            modes = [m for m in ATTACKS if m != "label_flip"]
+            cfg.freerider_assignment = {
+                c: modes[i % len(modes)] for i, c in enumerate(chosen)}
+        else:
+            cfg.freerider_assignment = {c: fr_mode for c in chosen}
+        print(f"[data] adversaries ({fr_mode}): {cfg.freerider_assignment}")
 
     return client_subsets, test, client_labels, client_test_subsets
 
