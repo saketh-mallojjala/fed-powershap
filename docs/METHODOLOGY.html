@@ -1,0 +1,301 @@
+<!doctype html><html><head><meta charset="utf-8"><title>DCFI-UPA Methodology</title><style>
+@page { size: A4; margin: 16mm 14mm; }
+* { box-sizing: border-box; }
+body { font-family:"Georgia","Times New Roman",serif; color:#1a1a1a; line-height:1.5;
+  font-size:10.5pt; margin:0; }
+h1 { font-size:19pt; color:#0b3d63; margin:0 0 6px; border-bottom:3px solid #0b3d63;
+     padding-bottom:8px; }
+h2 { font-size:13.5pt; color:#0b3d63; border-bottom:2px solid #0b3d63; padding-bottom:3px;
+     margin:22px 0 10px; page-break-after:avoid; }
+h3 { font-size:11.5pt; color:#12507f; margin:14px 0 6px; page-break-after:avoid; }
+p { margin:6px 0; text-align:justify; }
+code { font-family:"SF Mono",Menlo,Consolas,monospace; font-size:9pt;
+  background:#f2f5f8; padding:1px 4px; border-radius:3px; }
+table { border-collapse:collapse; width:100%; margin:10px 0; font-size:9.2pt;
+  page-break-inside:avoid; }
+th,td { border:1px solid #cdd6df; padding:5px 8px; text-align:center; }
+th { background:#0b3d63; color:#fff; }
+td:first-child, th:first-child { text-align:left; }
+tr:nth-child(even) td { background:#f5f8fb; }
+ul,ol { margin:6px 0 6px 6px; padding-left:18px; }
+li { margin:3px 0; }
+hr { border:none; border-top:1px solid #cdd6df; margin:18px 0; }
+blockquote { border-left:4px solid #0b3d63; background:#eef4f9; margin:12px 0;
+  padding:8px 12px; }
+/* Each diagram gets its own page block so it is never split mid-figure. */
+.mermaid { text-align:center; margin:14px 0; page-break-inside:avoid; }
+.mermaid svg { max-width:100% !important; height:auto !important; }
+</style></head><body><h1>DCFI-UPA — proposed methodology and dataset coverage</h1>
+<p>Companion to <a href="DCFI_TECHNICAL_REPORT.md"><code>DCFI_TECHNICAL_REPORT.md</code></a>. The diagrams
+below render natively on GitHub.</p>
+<hr />
+<h2>1. The proposed system: one communication round</h2>
+<p>The design principle is a <strong>strict one-way boundary</strong>. The reliability signal may
+decide <em>who gets paid</em>; it may not decide <em>whose update enters the model</em>. That
+separation is what makes the incentive layer free of accuracy cost — it was
+measured, not assumed (see §4 and the technical report §9.3).</p>
+<pre class="mermaid">
+flowchart TB
+    S1["<b>① SELECT</b><br/>score = utility + reliability + under-participation bonus<br/>sample m of N proportional to score, skipping quarantined"]
+
+    T1["<b>② LOCAL TRAINING</b><br/>each selected client trains with FedDyn"]
+    T2["<b>③ AGGREGATE</b><br/>FedDyn with <b>UNIFORM weights</b><br/>every selected update enters untouched"]
+    T3(["<b>Updated global model</b> w<sub>t+1</sub>"])
+
+    R0["<b>④ RISK ASSESSMENT</b> — three independent views"]
+    R1["<b>Probe loss</b> L(w<sub>t</sub>;D<sub>k</sub>)<br/><i>data quality</i> · blind to effort"]
+    R2["<b>Effort density</b> ‖Δ<sub>k</sub>‖ / n<sub>k</sub><br/><i>did they work?</i> · blind to small inflation"]
+    R3["<b>Temporal self-similarity</b><br/>cos(Δ<sub>k</sub><sup>t</sup>, Δ<sub>k</sub><sup>t−1</sup>) · <i>replay / staleness</i>"]
+
+    W1["<b>⑤ ESTIMATE CONTRIBUTION</b><br/>approximate leave-one-out on a held-out validation split<br/>utility = drop in balanced accuracy · fairness = drop in minority recall"]
+    W2["<b>⑥ ELIGIBILITY</b> from risk tier<br/>low → pay full · medium → pay half · high → pay nothing"]
+    W3["<b>⑦ PAY</b> r<sub>k</sub> = B · [ w<sub>base</sub>/|S| + w<sub>util</sub>·utility + w<sub>fair</sub>·fairness ]<br/>cap 40% per client · hold back 20% until reliability recovers"]
+    OUT(["Payment to client k"])
+
+    REL["<b>⑧ UPDATE RELIABILITY</b> — asymmetric EMA<br/>falls fast, recovers slowly<br/>repeated high risk → quarantine from selection"]
+
+    S1 --> T1 --> T2 --> T3
+    T1 -. "client updates Δ<sub>k</sub>" .-> R0
+    R0 --> R1 & R2 & R3
+    T3 -. "model, for LOO" .-> W1
+    R1 & R2 & R3 --> W2
+    W1 --> W3
+    W2 --> W3
+    W3 --> OUT
+    R0 --> REL
+    REL -. "next round" .-> S1
+
+    BOUND{{"⛔ THE ONE-WAY BOUNDARY<br/>Steps ⑤–⑦ read the model but never write to it.<br/>Paying a client less can never degrade accuracy."}}
+
+    classDef train fill:#e9f6ee,stroke:#0a7d3f,stroke-width:2px
+    classDef rew fill:#eef4f9,stroke:#0b3d63,stroke-width:2px
+    classDef risk fill:#fdf6e3,stroke:#b8860b,stroke-width:2px
+    classDef sel fill:#f3eefa,stroke:#5b3d8f,stroke-width:2px
+    classDef note fill:#fdf0ee,stroke:#b3261e,stroke-width:2px,stroke-dasharray:4 3
+    class T1,T2,T3 train
+    class W1,W2,W3,OUT rew
+    class R0,R1,R2,R3 risk
+    class S1,REL sel
+    class BOUND note
+</pre>
+<h3>Why the boundary is one-way</h3>
+<p>Our earlier method let the contribution signal set <strong>aggregation weights</strong>. A
+controlled ablation showed the better that signal worked, the <em>worse</em> the model
+became: the variant that detected nothing matched FedDyn (0.695 vs 0.697), and
+the variant that detected well lost 0.030. A label-noise client still holds
+usable gradient signal, and FedDyn's dynamic regularisation already bounds its
+damage — so down-weighting discards information for protection already present.</p>
+<p>Measured effect of moving the gate (5 seeds, balanced accuracy):</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Scenario</th>
+<th style="text-align: center;">FedDyn</th>
+<th style="text-align: center;">Gate on <strong>aggregation</strong></th>
+<th style="text-align: center;">Gate on <strong>reward only</strong></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">clean</td>
+<td style="text-align: center;">0.768</td>
+<td style="text-align: center;">0.735</td>
+<td style="text-align: center;"><strong>0.737</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">zero_update</td>
+<td style="text-align: center;">0.768</td>
+<td style="text-align: center;">0.647</td>
+<td style="text-align: center;"><strong>0.752</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">copied_update</td>
+<td style="text-align: center;">0.777</td>
+<td style="text-align: center;">0.643</td>
+<td style="text-align: center;"><strong>0.762</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;">random_update</td>
+<td style="text-align: center;">0.765</td>
+<td style="text-align: center;">0.637</td>
+<td style="text-align: center;"><strong>0.750</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Adversary reward capture under reward-only gating stays at 0.00% / 1.97% / 6.80%
+against a 40% fair share.</p>
+<hr />
+<h2>2. Threat model</h2>
+<pre class="mermaid">
+flowchart LR
+    A["Adversary<br/>types"] --> B["<b>Structurally impossible</b><br/>updates an honest client<br/>could never produce"]
+    A --> C["<b>Inside the honest distribution</b><br/>performs some genuine training"]
+
+    B --> B1["zero_update — 0.8%"]
+    B --> B2["copied_update — 3.3%"]
+    B --> B3["scaled_global — 6.3%"]
+    B --> B4["random_update — 9.1%"]
+
+    C --> C1["stale_model — 31.8%"]
+    C --> C2["low_effort — 33.5%"]
+    C --> C3["norm_inflation — 37.1%"]
+    C --> C4["label_flip — 37.4%"]
+
+    B1 & B2 & B3 & B4 --> D(["✅ <b>In scope</b> — starved<br/>0.8–9.1% of budget<br/>vs 40% fair share"])
+    C1 & C2 & C3 & C4 --> E(["⚠️ <b>Out of scope</b> — not starved<br/>near their full 40% share<br/>reported as limitations"])
+
+    classDef ok fill:#e9f6ee,stroke:#0a7d3f,stroke-width:2px
+    classDef bad fill:#fdf0ee,stroke:#b3261e,stroke-width:2px
+    class B,B1,B2,B3,B4,D ok
+    class C,C1,C2,C3,C4,E bad
+</pre>
+<p>The split is not arbitrary and it is not a convenience. An adversary that does
+<em>some</em> real training produces an update lying inside the natural spread of
+honest behaviour, and §7.6 of the technical report quantifies why that is
+unfixable by magnitude scoring: honest effort density has log-sd 1.014, so a 3×
+inflation sits 1.08 sd inside normal variation. Separating at 2 sd would demand
+inflation beyond 7.6×, which no attacker is obliged to use.</p>
+<hr />
+<h2>3. Experimental methodology</h2>
+<pre class="mermaid">
+flowchart TB
+    D1["<b>Step 0 — Centralized ceiling</b><br/>Pooled-data training, both feature regimes.<br/>Purpose: confirm discriminative headroom EXISTS<br/>before any federated comparison is run."] --> D2
+
+    D2{"Is the task<br/>saturated?"} -->|"yes — 0.96 acc / 0.996 AUC<br/>with suicidal-ideation feature"| D3["Drop that feature.<br/>A saturated task cannot<br/>discriminate between aggregators."]
+    D2 -->|"no — 0.794 acc / 0.862 AUC"| D4
+    D3 --> D4
+
+    D4["<b>Step 1 — Frozen protocol</b><br/>10 clients · 5 active/round · 2 local epochs · 40 rounds<br/>SGD lr=0.005 cosine · Dirichlet α=0.3 · last-round metric<br/>LR calibrated on FedAvg ONLY, then frozen for every method"] --> D5
+
+    D5["<b>Step 2 — Baselines</b><br/>FedAvg · FedProx · FedDyn · FedCE · SCAFFOLD<br/>FedBN · MOON · PoC-FedAvg"] --> D6
+    D6["<b>Step 3 — Proposed system</b><br/>DCFI-UPA, gate on reward only"] --> D7
+    D7["<b>Step 4 — Threat model</b><br/>8 adversaries × adversary fraction"] --> D8
+    D8["<b>Step 5 — Ground truth</b><br/>Leave-one-out under FedAvg (mechanism-neutral,<br/>so truth is not defined by the rule under test)"] --> D9
+    D9["<b>Step 6 — Metrics (15, three families)</b>"] --> D10
+    D10["<b>Step 7 — Ablations + parameter sweeps</b>"]
+
+    classDef step fill:#eef4f9,stroke:#0b3d63,stroke-width:2px
+    classDef gate fill:#fdf6e3,stroke:#b8860b,stroke-width:2px
+    class D1,D4,D5,D6,D7,D8,D9,D10 step
+    class D2,D3 gate
+</pre>
+<h3>The fifteen metrics</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Performance</th>
+<th style="text-align: left;">Reward fairness</th>
+<th style="text-align: left;">Fairness</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;">balanced accuracy</td>
+<td style="text-align: left;">Spearman ρ(reward, LOO)</td>
+<td style="text-align: left;">Jain — useful-client rewards</td>
+</tr>
+<tr>
+<td style="text-align: left;">macro-F1</td>
+<td style="text-align: left;">reward–contribution MAE</td>
+<td style="text-align: left;">worst-client balanced accuracy</td>
+</tr>
+<tr>
+<td style="text-align: left;">AUC</td>
+<td style="text-align: left;">reward share, positive vs negative contributors</td>
+<td style="text-align: left;">selection-frequency Jain</td>
+</tr>
+<tr>
+<td style="text-align: left;">convergence rounds</td>
+<td style="text-align: left;">reward-to-cost ratio</td>
+<td style="text-align: left;">ρ(reward, client size)</td>
+</tr>
+<tr>
+<td style="text-align: left;">collapsed seeds</td>
+<td style="text-align: left;">individual-rationality rate</td>
+<td style="text-align: left;">minority-class recall</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>4. Datasets tried</h2>
+<h3>Used in reported results</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Dataset</th>
+<th style="text-align: left;">Modality</th>
+<th style="text-align: left;">Task</th>
+<th style="text-align: center;">Runs</th>
+<th style="text-align: left;">Where it appears</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>Student Depression</strong> (Kaggle <code>hopesb</code>, 27,901 rows)</td>
+<td style="text-align: left;">tabular survey</td>
+<td style="text-align: left;">binary depression screening, 58.6% positive</td>
+<td style="text-align: center;"><strong>869</strong></td>
+<td style="text-align: left;"><strong>Primary — all current DCFI-UPA results</strong></td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>OCTMNIST</strong></td>
+<td style="text-align: left;">retinal OCT</td>
+<td style="text-align: left;">4-class</td>
+<td style="text-align: center;">38</td>
+<td style="text-align: left;">Earlier robustness study; the CSSV negative result</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>ISIC / DermaMNIST</strong></td>
+<td style="text-align: left;">dermoscopy</td>
+<td style="text-align: left;">7-class</td>
+<td style="text-align: center;">20</td>
+<td style="text-align: left;">Cross-dataset generalisation</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>APTOS-2019</strong></td>
+<td style="text-align: left;">fundus photography</td>
+<td style="text-align: left;">5-class ordinal (QWK)</td>
+<td style="text-align: center;">20</td>
+<td style="text-align: left;">Cross-dataset generalisation</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>Depression Student</strong> (Kaggle <code>ikynahidwin</code>, 502 rows)</td>
+<td style="text-align: left;">tabular survey</td>
+<td style="text-align: left;">binary</td>
+<td style="text-align: center;">ceiling only</td>
+<td style="text-align: left;">Saturation check — showed 0.96 acc / 0.996 AUC with the suicidal-ideation feature, which is why the screening regime exists</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Coverage: 4 datasets across 2 modalities with full federated results</strong>, plus one
+used as a saturation control. The core negative result (contribution-weighted
+aggregation does not beat FedDyn) replicates on all four.</p>
+<h3>Present in the codebase, not used for results</h3>
+<p><code>chestxray14</code> (2 exploratory runs only), <code>cifar10</code>, <code>mnist</code>, <code>fmnist</code>, <code>brats</code> —
+loaders exist and work, but none are part of any reported study.</p>
+<h3>Why the tabular mental-health dataset is primary</h3>
+<ul>
+<li>Matches the incentive setting: small institutional cohorts, self-reported and
+  therefore noisy labels, genuine privacy motivation.</li>
+<li>Cheap enough to run 864 federations — the leave-one-out ground truth alone
+  needs 390, which is infeasible on ResNet-scale imaging.</li>
+<li>Non-saturated in the screening regime, so aggregators are actually
+  distinguishable (verified in Step 0 before any comparison was run).</li>
+</ul>
+<h3>Honest limitation</h3>
+<p>All current DCFI-UPA results are on <strong>one dataset</strong>. The earlier negative result
+is 4-dataset; the incentive mechanism is not yet. Porting DCFI to OCTMNIST or
+APTOS is the clearest way to strengthen external validity, and the code path is
+dataset-agnostic — it needs runs, not new implementation.</p><script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script><script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    fontFamily: 'Georgia, serif', fontSize: '13px',
+    primaryColor: '#eef4f9', primaryTextColor: '#1a1a1a',
+    primaryBorderColor: '#0b3d63', lineColor: '#4a5b6a',
+    secondaryColor: '#e9f6ee', tertiaryColor: '#fdf6e3'
+  },
+  flowchart: { htmlLabels: true, curve: 'basis', useMaxWidth: true }
+});
+</script></body></html>
