@@ -73,6 +73,15 @@ class Config:
     # Medium-risk response: clip the CLASSIFIER delta toward this quantile of
     # the low-risk peers' norm. The feature extractor is never clipped.
     dcfi_clip_quantile: float = 0.5
+    # Where the reliability signal is allowed to act:
+    #   "full"        - gate BOTH aggregation and reward (clip/exclude + no pay)
+    #   "reward_only" - aggregation is untouched plain FedDyn over all active
+    #                   clients; risk decides PAYMENT ELIGIBILITY only. This is
+    #                   the recommended configuration: measured, the aggregation
+    #                   gate costs accuracy on 8 of 9 conditions while the same
+    #                   scores are useful for deciding who gets paid.
+    #   "off"         - no gating anywhere (reward still utility/fairness-driven)
+    dcfi_gate_mode: str = "full"
     # Quorum floor: the gate may never drop the active set below this
     # fraction. Excess high-risk clients are demoted to clipped instead.
     dcfi_min_keep_frac: float = 0.6
