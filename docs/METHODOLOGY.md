@@ -14,59 +14,47 @@ measured, not assumed (see §4 and the technical report §9.3).
 
 ```mermaid
 flowchart TB
-    subgraph SEL["① SELECTION"]
-        direction TB
-        S1["Score every non-quarantined client<br/>utility + reliability + under-participation bonus"]
-        S2["Sample m of N <b>proportional to score</b><br/>(not top-m: top-m locks out mid-ranked clients)"]
-        S1 --> S2
-    end
+    S1["<b>① SELECT</b><br/>score = utility + reliability + under-participation bonus<br/>sample m of N proportional to score, skipping quarantined"]
 
-    subgraph TRAIN["② TRAINING CHANNEL — optimises accuracy"]
-        direction TB
-        T1["Each selected client trains locally with FedDyn"]
-        T2["Aggregate with FedDyn using <b>UNIFORM weights</b><br/>every selected update enters untouched"]
-        T3["Updated global model w<sub>t+1</sub>"]
-        T1 --> T2 --> T3
-    end
+    T1["<b>② LOCAL TRAINING</b><br/>each selected client trains with FedDyn"]
+    T2["<b>③ AGGREGATE</b><br/>FedDyn with <b>UNIFORM weights</b><br/>every selected update enters untouched"]
+    T3(["<b>Updated global model</b> w<sub>t+1</sub>"])
 
-    subgraph RISK["③ RISK ASSESSMENT — three independent views"]
-        direction LR
-        R1["<b>Probe loss</b><br/>L(w<sub>t</sub>; D<sub>k</sub>)<br/><i>data quality</i><br/>blind to effort"]
-        R2["<b>Effort density</b><br/>‖Δ<sub>k</sub>‖ / n<sub>k</sub><br/><i>did they work?</i><br/>blind to small inflation"]
-        R3["<b>Temporal self-similarity</b><br/>cos(Δ<sub>k</sub><sup>t</sup>, Δ<sub>k</sub><sup>t−1</sup>)<br/><i>replay / staleness</i>"]
-    end
+    R0["<b>④ RISK ASSESSMENT</b> — three independent views"]
+    R1["<b>Probe loss</b> L(w<sub>t</sub>;D<sub>k</sub>)<br/><i>data quality</i> · blind to effort"]
+    R2["<b>Effort density</b> ‖Δ<sub>k</sub>‖ / n<sub>k</sub><br/><i>did they work?</i> · blind to small inflation"]
+    R3["<b>Temporal self-similarity</b><br/>cos(Δ<sub>k</sub><sup>t</sup>, Δ<sub>k</sub><sup>t−1</sup>) · <i>replay / staleness</i>"]
 
-    subgraph REWARD["④ REWARD CHANNEL — off the training path"]
-        direction TB
-        W1["Approximate leave-one-out on a <b>held-out validation split</b><br/>utility = drop in balanced accuracy without client k<br/>fairness = drop in minority-class recall without client k"]
-        W2["Eligibility from risk tier<br/>low → pay full · medium → pay half · high → pay nothing"]
-        W3["r<sub>k</sub> = B · [ w<sub>base</sub>/|S| + w<sub>util</sub>·utility + w<sub>fair</sub>·fairness ]"]
-        W4["Cap 40% per client · hold back 20%<br/>released once reliability recovers"]
-        W1 --> W2 --> W3 --> W4
-    end
+    W1["<b>⑤ ESTIMATE CONTRIBUTION</b><br/>approximate leave-one-out on a held-out validation split<br/>utility = drop in balanced accuracy · fairness = drop in minority recall"]
+    W2["<b>⑥ ELIGIBILITY</b> from risk tier<br/>low → pay full · medium → pay half · high → pay nothing"]
+    W3["<b>⑦ PAY</b> r<sub>k</sub> = B · [ w<sub>base</sub>/|S| + w<sub>util</sub>·utility + w<sub>fair</sub>·fairness ]<br/>cap 40% per client · hold back 20% until reliability recovers"]
+    OUT(["Payment to client k"])
 
-    REL["⑤ Update reliability (asymmetric EMA)<br/>falls fast, recovers slowly<br/>repeated high risk → quarantine from SELECTION"]
+    REL["<b>⑧ UPDATE RELIABILITY</b> — asymmetric EMA<br/>falls fast, recovers slowly<br/>repeated high risk → quarantine from selection"]
 
-    SEL --> TRAIN
-    TRAIN -.->|"client updates Δ<sub>k</sub>"| RISK
-    RISK --> REWARD
-    TRAIN -.->|"aggregate model"| W1
-    RISK --> REL
-    REL -.->|"next round"| SEL
-    REWARD --> PAY(["Payment to client k"])
+    S1 --> T1 --> T2 --> T3
+    T1 -. "client updates Δ<sub>k</sub>" .-> R0
+    R0 --> R1 & R2 & R3
+    T3 -. "model, for LOO" .-> W1
+    R1 & R2 & R3 --> W2
+    W1 --> W3
+    W2 --> W3
+    W3 --> OUT
+    R0 --> REL
+    REL -. "next round" .-> S1
 
-    NOTE{{"⛔ NO PATH from reward back into the model.<br/>Paying a client less can never degrade accuracy."}}
-    REWARD -.-x NOTE
-    NOTE -.-x TRAIN
+    BOUND{{"⛔ THE ONE-WAY BOUNDARY<br/>Steps ⑤–⑦ read the model but never write to it.<br/>Paying a client less can never degrade accuracy."}}
 
     classDef train fill:#e9f6ee,stroke:#0a7d3f,stroke-width:2px
     classDef rew fill:#eef4f9,stroke:#0b3d63,stroke-width:2px
     classDef risk fill:#fdf6e3,stroke:#b8860b,stroke-width:2px
+    classDef sel fill:#f3eefa,stroke:#5b3d8f,stroke-width:2px
     classDef note fill:#fdf0ee,stroke:#b3261e,stroke-width:2px,stroke-dasharray:4 3
-    class TRAIN,T1,T2,T3 train
-    class REWARD,W1,W2,W3,W4,PAY rew
-    class RISK,R1,R2,R3 risk
-    class NOTE note
+    class T1,T2,T3 train
+    class W1,W2,W3,OUT rew
+    class R0,R1,R2,R3 risk
+    class S1,REL sel
+    class BOUND note
 ```
 
 ### Why the boundary is one-way
