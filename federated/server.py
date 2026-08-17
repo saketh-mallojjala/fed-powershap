@@ -408,11 +408,42 @@ class Server:
         rr = self.risk_scorer.score(
             active, losses, flat, self.client_sizes[active], hist)
 
-        # --- safety gate (training channel) ---
-        kept, kept_ids, actions = self.safety_gate.apply(
-            global_state, client_states, rr, hist, round_idx)
+        # --- safety gate ---
+        # `gate_mode` decides where the reliability signal is allowed to act.
+        # In "reward_only" the training channel is untouched plain FedDyn over
+        # every active client, and risk governs payment eligibility alone. That
+        # is the configuration the measurements support: the aggregation gate
+        # costs accuracy on 8 of 9 conditions, while the same scores are
+        # genuinely useful for deciding who gets paid.
+        mode = str(getattr(cfg, "dcfi_gate_mode", "full"))
+        if mode == "full":
+            kept, kept_ids, actions = self.safety_gate.apply(
+                global_state, client_states, rr, hist, round_idx)
+        else:
+            kept, kept_ids = list(client_states), list(active)
+            actions = ["full"] * len(active)
+            if mode == "reward_only":
+                # Quarantine still applies to SELECTION (a repeatedly bad client
+                # stops being invited), but never removes an update mid-round.
+                for cid, tier in zip(rr.ids, rr.tier):
+                    h = hist[cid]
+                    if int(tier) == HIGH:
+                        h.high_risk_streak += 1
+                        if h.high_risk_streak >= self.safety_gate.quarantine_after:
+                            h.quarantined_until = (
+                                round_idx + self.safety_gate.quarantine_rounds)
+                    else:
+                        h.high_risk_streak = 0
         for cid, tier in zip(rr.ids, rr.tier):
             update_reliability(hist[cid], int(tier))
+
+        # Payment eligibility: in reward_only mode the risk tier decides who is
+        # PAID, decoupled from who is aggregated. HIGH earns nothing; MEDIUM is
+        # paid at a reduced rate rather than zero, since a soft flag on five
+        # clients is weak evidence.
+        pay_scale = np.ones(len(active))
+        if mode == "reward_only":
+            pay_scale = np.array([{0: 1.0, 1: 0.5, 2: 0.0}[int(t)] for t in rr.tier])
 
         if not kept:                       # everyone excluded: hold the model
             new_state = {k: v.clone() for k, v in global_state.items()}
@@ -430,7 +461,18 @@ class Server:
         for cid, u in zip(kept_ids, utility):
             h = hist[cid]
             h.utility_ema = 0.7 * h.utility_ema + 0.3 * float(u)
-        paid = self.reward_channel.pay(kept_ids, utility, fairness, hist)
+        # Apply payment eligibility (reward_only mode); in "full" mode this is a
+        # no-op because the gate has already removed high-risk clients from
+        # `kept_ids` altogether.
+        pay_u, pay_f = np.asarray(utility, float).copy(), np.asarray(fairness, float).copy()
+        if mode == "reward_only" and len(pay_scale) == len(active):
+            scale_by_id = dict(zip(active, pay_scale))
+            s = np.array([scale_by_id.get(c, 1.0) for c in kept_ids])
+            pay_u = np.where(s > 0, pay_u * s, -np.inf)
+            pay_f = np.where(s > 0, pay_f * s, -np.inf)
+        eligible = [i for i in range(len(kept_ids)) if np.isfinite(pay_u[i])]
+        paid = self.reward_channel.pay(
+            [kept_ids[i] for i in eligible], pay_u[eligible], pay_f[eligible], hist)
 
         return dict(
             new_state=new_state, weights=weights, kept_ids=kept_ids,
