@@ -66,17 +66,25 @@ LOSS_BETA = 1.5      # matches METHOD_PRESETS["proposed"]["loss_weight_beta"]
 EMA_MOM = 0.5        # matches cssv_ema
 
 
+DATASET_OVERRIDE = {"dataset": None, "partition_mode": "dirichlet", "n_clients": None}
+
+
 def build_cmd(method, seed, noise, exp, log_dir, exclude=-1, contrib_signal=None):
     cmd = [sys.executable, os.path.join(ROOT, "main.py"),
            "--method", method, "--seed", str(seed), "--exp-name", exp,
            "--device", "cpu", "--log-dir", log_dir,
            "--noisy-client-frac", str(noise),
-           "--eval-every", "40"]          # last round is always evaluated
+           "--partition-mode", DATASET_OVERRIDE["partition_mode"],
+           "--eval-every", "40"]
+    if DATASET_OVERRIDE["dataset"]:
+        cmd += ["--dataset", DATASET_OVERRIDE["dataset"]]          # last round is always evaluated
     if exclude >= 0:
         cmd += ["--exclude-client", str(exclude)]
     if contrib_signal:
         cmd += ["--contrib-signal", contrib_signal]
     for k, v in PROTOCOL.items():
+        if DATASET_OVERRIDE["dataset"] and k == "dataset":
+            continue
         cmd += [f"--{k.replace('_', '-')}", str(v)]
     return cmd
 
@@ -210,9 +218,16 @@ def main():
     p.add_argument("--json-out", default=os.path.join(STUDY, "tables", "loo_reward_fidelity.json"))
     p.add_argument("--skip-runs", action="store_true")
     p.add_argument("--force", action="store_true")
+    p.add_argument("--dataset", default=None)
+    p.add_argument("--partition-mode", default="dirichlet")
+    p.add_argument("--n-clients", type=int, default=None)
     args = p.parse_args()
     os.makedirs(args.log_dir, exist_ok=True)
-    N = PROTOCOL["num_clients"]
+    DATASET_OVERRIDE["dataset"] = args.dataset
+    DATASET_OVERRIDE["partition_mode"] = args.partition_mode
+    # With a natural partition the client count comes from the data, so it must
+    # be supplied rather than read from the fixed protocol.
+    N = args.n_clients or PROTOCOL["num_clients"]
 
     # ---------- 1. run everything ----------
     jobs = []

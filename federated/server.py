@@ -657,14 +657,19 @@ class Server:
 
     def _update_scaffold_control(self, auxes):
         N = len(self.clients)
-        S = len(auxes)
-        if S == 0 or "delta_c" not in auxes[0]:
+        # An adversary that never runs the local solver returns no control
+        # variate -- which is exactly what a real free-rider would do, so the
+        # server must tolerate it rather than crash. Average over the clients
+        # that actually reported one, and scale by that count.
+        with_c = [a for a in auxes if a and "delta_c" in a]
+        S = len(with_c)
+        if S == 0:
             return
-        keys = list(auxes[0]["delta_c"].keys())
+        keys = list(with_c[0]["delta_c"].keys())
         if self.scaffold_c is None:
-            self.scaffold_c = {k: torch.zeros_like(auxes[0]["delta_c"][k]) for k in keys}
+            self.scaffold_c = {k: torch.zeros_like(with_c[0]["delta_c"][k]) for k in keys}
         for k in keys:
-            mean_delta = torch.stack([a["delta_c"][k] for a in auxes], 0).mean(0)
+            mean_delta = torch.stack([a["delta_c"][k] for a in with_c], 0).mean(0)
             self.scaffold_c[k] = self.scaffold_c[k] + (S / N) * mean_delta
 
     def _agg_feddyn(self, global_state, client_states, weights=None) -> Dict[str, torch.Tensor]:

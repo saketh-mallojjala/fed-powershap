@@ -87,9 +87,12 @@ def _load_raw(dataset: str, root: str, image_size: int = 224, seed: int = 42,
     # Tabular sets have no transforms at all, so they short-circuit before
     # _get_transforms (which only knows about image datasets).
     if dataset in TABULAR_REGISTRY:
-        train, test, _ = load_tabular(
+        train, test, meta = load_tabular(
             dataset, root=root, seed=seed, feature_regime=feature_regime
         )
+        # Carried on the object so build_federated_datasets can form clients
+        # from the real grouping variable instead of a Dirichlet draw.
+        train.natural_groups = meta.train_groups
         return train, test
     train_tf, test_tf = _get_transforms(dataset, image_size=image_size)
     os.makedirs(root, exist_ok=True)
@@ -235,13 +238,31 @@ def build_federated_datasets(
         labels = labels[keep]
         print(f"[data] capped train pool to {len(keep)} samples (stratified)")
 
-    client_idx = dirichlet_partition(
-        labels=labels,
-        num_clients=cfg.num_clients,
-        alpha=cfg.alpha,
-        num_classes=cfg.num_classes,
-        seed=cfg.seed,
-    )
+    groups = getattr(train, "natural_groups", None)
+    mode = str(getattr(cfg, "partition_mode", "dirichlet"))
+    if mode == "natural" and groups is not None:
+        # One client per real group (hospital / specialty). num_clients is
+        # DERIVED from the data, not chosen -- that is the point of the setting.
+        g = np.asarray(groups)[keep] if len(groups) != len(labels) else np.asarray(groups)
+        uniq = sorted(set(g.tolist()))
+        client_idx = [np.where(g == u)[0].astype(np.int64) for u in uniq]
+        if cfg.num_clients != len(uniq):
+            print(f"[data] natural partition: num_clients {cfg.num_clients} -> {len(uniq)} "
+                  f"({', '.join(uniq[:6])}{'...' if len(uniq) > 6 else ''})")
+            cfg.num_clients = len(uniq)
+            cfg.active_size_m = min(cfg.active_size_m, len(uniq))
+            cfg.candidate_size_d = min(cfg.candidate_size_d, len(uniq))
+        cfg.client_group_names = uniq
+    elif mode == "natural":
+        raise ValueError(f"--partition-mode natural but {cfg.dataset!r} has no grouping column")
+    else:
+        client_idx = dirichlet_partition(
+            labels=labels,
+            num_clients=cfg.num_clients,
+            alpha=cfg.alpha,
+            num_classes=cfg.num_classes,
+            seed=cfg.seed,
+        )
 
     frac = float(getattr(cfg, "local_test_frac", 0.0))
     train_eval = None
