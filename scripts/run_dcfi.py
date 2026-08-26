@@ -47,16 +47,24 @@ METHODS = ["feddyn", "dcfi"]
 COLLAPSE = 0.51        # balanced accuracy at/below this = single-class prediction
 
 
-def build_cmd(method, attack, seed, frac, exp, log_dir):
+def build_cmd(method, attack, seed, frac, exp, log_dir,
+              dataset=None, partition_mode="dirichlet", gate_mode="reward_only"):
     cmd = [sys.executable, os.path.join(ROOT, "main.py"),
            "--method", method, "--seed", str(seed), "--exp-name", exp,
-           "--device", "cpu", "--log-dir", log_dir, "--eval-every", "2"]
+           "--device", "cpu", "--log-dir", log_dir, "--eval-every", "2",
+           "--partition-mode", partition_mode]
+    if method == "dcfi":
+        cmd += ["--dcfi-gate-mode", gate_mode]
+    if dataset:
+        cmd += ["--dataset", dataset]
     if attack == "label_flip":
         # Label flipping is a data corruption, not an update behaviour.
         cmd += ["--noisy-client-frac", str(frac), "--label-noise-rate", "0.6"]
     elif attack != "none":
         cmd += ["--freerider-mode", attack, "--freerider-frac", str(frac)]
     for k, v in PROTOCOL.items():
+        if dataset and k in ("dataset",):
+            continue
         cmd += [f"--{k.replace('_', '-')}", str(v)]
     return cmd
 
@@ -193,6 +201,9 @@ def main():
     p.add_argument("--attacks", nargs="+", default=["none"] + ATTACKS)
     p.add_argument("--methods", nargs="+", default=METHODS)
     p.add_argument("--frac", type=float, default=0.4)
+    p.add_argument("--dataset", default="student_depression")
+    p.add_argument("--partition-mode", default="dirichlet")
+    p.add_argument("--gate-mode", default="reward_only")
     p.add_argument("--log-dir", default=os.path.join(STUDY, "logs_dcfi"))
     p.add_argument("--out", default=os.path.join(STUDY, "tables", "dcfi_results.md"))
     p.add_argument("--skip-runs", action="store_true")
@@ -204,7 +215,10 @@ def main():
         for meth in args.methods:
             for s in args.seeds:
                 exp = f"dcfi_{meth}_{atk}_seed{s}"
-                jobs.append((exp, build_cmd(meth, atk, s, args.frac, exp, args.log_dir)))
+                jobs.append((exp, build_cmd(meth, atk, s, args.frac, exp, args.log_dir,
+                                            dataset=args.dataset,
+                                            partition_mode=args.partition_mode,
+                                            gate_mode=args.gate_mode)))
 
     if not args.skip_runs:
         todo = [(e, c) for e, c in jobs

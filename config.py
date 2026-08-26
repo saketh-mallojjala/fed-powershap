@@ -38,6 +38,14 @@ class Config:
     image_size: int = 224            # only used by image-folder datasets (aptos, ...)
     num_workers: int = 0             # DataLoader workers; bump to 2-4 for aptos
 
+    # How clients are formed:
+    #   "dirichlet" - synthetic label-skew partition (the standard benchmark)
+    #   "natural"   - one client per real group in the data (hospital, medical
+    #                 specialty). num_clients is then DERIVED from the data.
+    # Real silos differ by case mix and referral pathway, not by a symmetric
+    # label skew, so "natural" tests something Dirichlet cannot.
+    partition_mode: str = "dirichlet"
+
     # Federation
     num_clients: int = 20
     alpha: float = 0.3                # Dirichlet concentration (lower => more non-IID)
