@@ -69,10 +69,20 @@ def _gmm_split(x: np.ndarray, seed: int = 0) -> np.ndarray:
         return np.ones(n)
     try:
         from sklearn.mixture import GaussianMixture
-        g = GaussianMixture(n_components=2, random_state=seed,
-                            reg_covar=1e-6, n_init=2).fit(x)
-        clean = int(np.argmin(g.means_.ravel()))
-        return g.predict_proba(x)[:, clean]
+        g2 = GaussianMixture(n_components=2, random_state=seed,
+                             reg_covar=1e-6, n_init=2).fit(x)
+        # Is there actually more than one population? A two-component mixture
+        # will always partition a single cluster, so fitting one unconditionally
+        # makes these baselines exclude clients even when no client is
+        # corrupted -- which is not what FedNoRo or FedCorr do, and would
+        # handicap them in exactly the clean-data column the paper reports.
+        # Compare against a one-component fit and only split when it wins.
+        g1 = GaussianMixture(n_components=1, random_state=seed,
+                             reg_covar=1e-6).fit(x)
+        if g2.bic(x) >= g1.bic(x):
+            return np.ones(n)                      # one population: all clean
+        clean = int(np.argmin(g2.means_.ravel()))
+        return g2.predict_proba(x)[:, clean]
     except Exception:
         med = float(np.median(x))
         return (x.ravel() <= med).astype(np.float64)
