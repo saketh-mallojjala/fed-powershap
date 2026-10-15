@@ -180,7 +180,11 @@ class Config:
 
     # Aggregation
     #   fedavg | shapfed_wa | fedbn | scaffold | feddyn | fedce
+    # fednoro | fedcorr | feda3i are the noise-aware baselines (reviewer B.1);
+    # all three sit on FedDyn so only the aggregation rule differs.
     aggregation: str = "shapfed_wa"
+    noise_baseline_warmup: int = 5
+    feda3i_gamma: float = 2.0
     # --- shapfed_wa (proposed) knobs ---
     # Temperature to sharpen Shapley weights; 1.0 disables.
     cssv_temperature: float = 1.0

@@ -25,6 +25,8 @@ from federated.dcfi import (
     HIGH, LOW, MEDIUM, TIER_NAMES, ClientHistory, RewardChannel, RiskScorer,
     SafetyGate, select_dcfi, update_reliability,
 )
+from federated.noise_baselines import (feda3i_weights, fedcorr_weights,
+                                       fednoro_weights)
 from federated.selection import SelectionOutcome, select_clients
 from federated.shapley import _cap_weights, compute_cssv, cssv_to_weights
 from models import CLASSIFIER_LAYER_NAME
@@ -342,6 +344,32 @@ class Server:
                 weights, cssv = self._shapfed_weights(
                     global_state, client_states, active_sizes, outcome.active, round_idx
                 )
+            new_state = self._agg_feddyn(global_state, client_states, weights=weights)
+        elif cfg.aggregation in ("fednoro", "fedcorr", "feda3i"):
+            # Noise-aware baselines requested by reviewer B. All three need the
+            # same per-client loss signal the proposed method uses, so it is
+            # computed once here; the methods differ in what they do with it.
+            losses = np.array([self.clients[cid].probe_loss(self.global_model)
+                               for cid in outcome.active], dtype=np.float64)
+            self._last_losses = losses.tolist()
+            if cfg.aggregation == "fednoro":
+                weights = fednoro_weights(
+                    losses, client_states, global_state, active_sizes, round_idx,
+                    warmup_rounds=int(getattr(cfg, "noise_baseline_warmup", 10)),
+                    seed=cfg.seed)
+            elif cfg.aggregation == "fedcorr":
+                weights = fedcorr_weights(
+                    losses, client_states, global_state, active_sizes, round_idx,
+                    warmup_rounds=int(getattr(cfg, "noise_baseline_warmup", 5)),
+                    seed=cfg.seed)
+            else:
+                weights = feda3i_weights(
+                    losses, active_sizes, round_idx,
+                    gamma=float(getattr(cfg, "feda3i_gamma", 2.0)),
+                    max_weight=cfg.cssv_max_weight,
+                    warmup_rounds=int(getattr(cfg, "noise_baseline_warmup", 5)))
+            # Each is defined on top of FedDyn here, matching the proposed
+            # method's local solver, so only the aggregation rule differs.
             new_state = self._agg_feddyn(global_state, client_states, weights=weights)
         elif cfg.aggregation == "fedce":
             weights = fedce_weights(global_state, client_states, active_sizes)
