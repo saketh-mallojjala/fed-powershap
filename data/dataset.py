@@ -138,6 +138,82 @@ class NoisyLabelDataset(Dataset):
         return x, y
 
 
+class FeatureShiftDataset(Dataset):
+    """Apply a fixed, client-specific covariate shift to the inputs.
+
+    Reviewer B asked for "feature distribution changes across clients", which
+    the label-noise protocol does not cover: there the inputs are identical
+    across clients and only the supervision differs. Here the labels are left
+    untouched and only the imaging statistics move, which is what differing
+    scanners, acquisition protocols and stains actually produce.
+
+    The shift is deterministic per client (seeded by client id), so a client's
+    distribution is stable across rounds -- a client whose data drifted every
+    round would be a different experiment.
+
+    This also supplies the condition Reviewer A asked about: a client with a
+    genuine distribution shift but *correct* labels. Such a client has high
+    loss under the global model yet should not be down-weighted, so it is the
+    direct test of whether a loss-based score confuses "corrupted" with
+    "different but correct".
+    """
+
+    def __init__(self, base: Dataset, severity: float = 0.0, seed: int = 0,
+                 mode: str = "photometric"):
+        self.base, self.severity, self.mode = base, float(severity), mode
+        g = np.random.default_rng(1000 + int(seed))
+        # Per-client constants, drawn once.
+        self.gain = 1.0 + self.severity * float(g.uniform(-0.6, 0.6))
+        self.bias = self.severity * float(g.uniform(-0.5, 0.5))
+        self.gamma = float(np.exp(self.severity * g.uniform(-0.7, 0.7)))
+        self.blur = self.severity * float(g.uniform(0.0, 1.0))
+        self.noise_sd = self.severity * float(g.uniform(0.0, 0.25))
+        self._g = torch.Generator().manual_seed(1000 + int(seed))
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i: int):
+        x, y = self.base[i]
+        if self.severity <= 0:
+            return x, y
+        x = x.clone().float()
+        if self.mode in ("photometric", "all"):
+            # contrast/brightness, then gamma on a 0-1 view of the tensor
+            x = x * self.gain + self.bias
+            lo, hi = x.amin(), x.amax()
+            if float(hi - lo) > 1e-6:
+                u = ((x - lo) / (hi - lo)).clamp(1e-6, 1.0) ** self.gamma
+                x = u * (hi - lo) + lo
+        if self.mode in ("blur", "all") and self.blur > 0 and x.dim() >= 3:
+            # cheap separable box blur, strength set by the per-client constant
+            k = 1 + 2 * int(round(self.blur * 2))
+            if k >= 3:
+                pad = k // 2
+                xx = x.unsqueeze(0) if x.dim() == 3 else x
+                c = xx.shape[1]
+                ker = torch.ones(c, 1, k, k, dtype=xx.dtype) / (k * k)
+                xx = torch.nn.functional.conv2d(
+                    torch.nn.functional.pad(xx, (pad,) * 4, mode="reflect"),
+                    ker, groups=c)
+                x = xx.squeeze(0) if x.dim() == 3 else xx
+        if self.noise_sd > 0:
+            x = x + torch.randn(x.shape, generator=self._g, dtype=x.dtype) * self.noise_sd
+        return x, y
+
+
+def _asymmetric_target(true: int, num_classes: int) -> int:
+    """Pair-flip: map each class to the next one, cyclically.
+
+    Symmetric noise spreads a flipped label uniformly over the other classes,
+    which is easy to detect because it destroys class structure. Real
+    annotation error is systematic -- adjacent disease grades are confused far
+    more often than distant ones -- so the label-noise literature reports both.
+    Pair-flip is the standard asymmetric model and is the harder case.
+    """
+    return (int(true) + 1) % int(num_classes)
+
+
 def _load_train_eval_view(dataset: str, root: str, image_size: int, seed: int,
                           feature_regime: str = "screening"):
     """Return the *training* pool with **test** transforms (no augmentation).
@@ -309,18 +385,47 @@ def build_federated_datasets(
             if n_flip == 0:
                 continue
             flip_pos = nrng.choice(m, size=n_flip, replace=False)
+            noise_type = str(getattr(cfg, "label_noise_type", "symmetric"))
             remap = {}
             for p in flip_pos:
                 true = int(ck[p])
-                choices = [c for c in range(cfg.num_classes) if c != true]
-                remap[int(p)] = int(nrng.choice(choices))
+                if noise_type == "asymmetric":
+                    remap[int(p)] = _asymmetric_target(true, cfg.num_classes)
+                else:
+                    choices = [c for c in range(cfg.num_classes) if c != true]
+                    remap[int(p)] = int(nrng.choice(choices))
             client_subsets[k] = NoisyLabelDataset(client_subsets[k], remap)
         # Record which clients were corrupted so the run log can carry it; the
         # mechanism analysis (does the detector down-weight them?) needs ground
         # truth and should not have to re-derive it from the RNG.
         cfg.noisy_client_ids = sorted(int(i) for i in noisy_ids)
-        print(f"[data] injected label noise: clients {cfg.noisy_client_ids} "
-              f"@ rate {noise_rate}")
+        print(f"[data] injected {str(getattr(cfg, 'label_noise_type', 'symmetric'))} "
+              f"label noise: clients {cfg.noisy_client_ids} @ rate {noise_rate}")
+
+    # Covariate-shifted clients: inputs move, labels stay correct. Chosen
+    # DISJOINT from the label-noise clients, so "high loss because corrupted"
+    # and "high loss because different" can be told apart in the analysis --
+    # which is exactly what reviewer A asked for.
+    shift_frac = float(getattr(cfg, "shift_client_frac", 0.0))
+    shift_sev = float(getattr(cfg, "shift_severity", 0.0))
+    cfg.shifted_client_ids = []
+    if shift_frac > 0.0 and shift_sev > 0.0:
+        srng = np.random.default_rng(cfg.seed + 5)
+        taken = set(getattr(cfg, "noisy_client_ids", []))
+        pool = [i for i in range(cfg.num_clients) if i not in taken]
+        n_shift = min(len(pool), max(1, int(round(cfg.num_clients * shift_frac))))
+        shift_ids = srng.choice(pool, size=n_shift, replace=False) if pool else []
+        for k in shift_ids:
+            client_subsets[k] = FeatureShiftDataset(
+                client_subsets[k], severity=shift_sev, seed=int(k),
+                mode=str(getattr(cfg, "shift_mode", "all")))
+            if client_test_subsets[k] is not None:
+                client_test_subsets[k] = FeatureShiftDataset(
+                    client_test_subsets[k], severity=shift_sev, seed=int(k),
+                    mode=str(getattr(cfg, "shift_mode", "all")))
+        cfg.shifted_client_ids = sorted(int(i) for i in shift_ids)
+        print(f"[data] feature shift (labels CORRECT): clients "
+              f"{cfg.shifted_client_ids} @ severity {shift_sev}")
 
     # Free-rider clients (proposal §9.3). Chosen DISJOINT from the label-noise
     # clients so the two adversary types never overlap and their detection rates

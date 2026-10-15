@@ -142,6 +142,17 @@ class Config:
     # their TRAINING labels are randomly flipped (test labels stay clean). This
     # is the regime contribution-aware aggregation is designed for — it should
     # down-weight noisy clients where FedAvg/FedDyn trust them and degrade.
+    # Label-noise model. "symmetric" spreads a flipped label uniformly over the
+    # other classes; "asymmetric" is the standard pair-flip (class c -> c+1),
+    # which preserves class structure and is the harder, more realistic case.
+    # Reviewer B asked for results under more than one noise type.
+    label_noise_type: str = "symmetric"
+    # Covariate shift: give `shift_client_frac` of clients a fixed per-client
+    # photometric/blur/noise shift of this severity, labels untouched. These are
+    # the "high loss but correctly labelled" clients of reviewer A's question.
+    shift_client_frac: float = 0.0
+    shift_severity: float = 0.0
+    shift_mode: str = "all"
     noisy_client_frac: float = 0.0
     label_noise_rate: float = 0.0
 
