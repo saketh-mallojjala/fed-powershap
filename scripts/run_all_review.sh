@@ -23,4 +23,10 @@ echo "=== OCTMNIST tier 1 (20k cap) ==="
 $SW --dataset octmnist --tier 1 --seeds 0
 echo "=== OCTMNIST tier 2 (20k cap) ==="
 $SW --dataset octmnist --tier 2 --seeds 0
+# More seeds for the headline grid, appended LAST: the other reviewer points
+# are unanswered until their runs exist, whereas this one is merely
+# under-powered. Paired per-seed differences have sd ~0.007 against an
+# unpaired arm sd of ~0.045, so extra seeds buy real confidence cheaply.
+echo "=== APTOS tier 1, seeds 2-4 (power for the headline claim) ==="
+$SW --dataset aptos --tier 1 --seeds 2 3 4
 echo "ALL_REVIEW_DONE"
