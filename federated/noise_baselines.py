@@ -55,7 +55,7 @@ def _flat_delta(state: Dict[str, torch.Tensor],
                       for k in ks]).numpy()
 
 
-def _gmm_split(x: np.ndarray, seed: int = 0, bic_margin: float = 10.0) -> np.ndarray:
+def _gmm_split(x: np.ndarray, seed: int = 0, bic_margin: float = 4.0) -> np.ndarray:
     """Two-component 1-D GMM; returns P(low-mean component), i.e. P(clean).
 
     FedNoRo and FedCorr both separate clients by fitting a two-component
@@ -79,8 +79,25 @@ def _gmm_split(x: np.ndarray, seed: int = 0, bic_margin: float = 10.0) -> np.nda
             10                       0.0%               99.4%    99.8%
             20                       0.0%               88.4%    86.6%
 
-    10 is the smallest margin that never splits a clean federation while still
-    detecting essentially every corrupted one.
+    Simulation alone was misleading. Measured on real APTOS runs, the BIC gap
+    is far smaller than the simulation implied, because clean clients on
+    Dirichlet(0.3) data vary much more than the simulation's sigma allowed:
+
+        corruption level    BIC(1) - BIC(2)
+                     0%     0.0, 2.7, 0.0
+                    20%     7.0
+                 40-44%     5.3, 11.3
+
+    A margin of 10 therefore never fires at 20% corruption and silently
+    reduces FedNoRo and FedCorr to plain size weighting -- which is how they
+    came to report identical numbers. **4** is the operating point the data
+    supports: above every clean run (max 2.7) and below every corrupted one
+    (min 5.3).
+
+    Calibrating a baseline's hyper-parameter on the evaluation data is worth
+    stating plainly. It was chosen to make these baselines *work* rather than
+    fail, so it biases against the proposed method, and the alternative was
+    reporting competitors that had been silently disabled.
     """
     x = np.asarray(x, dtype=np.float64).reshape(-1, 1)
     n = len(x)
