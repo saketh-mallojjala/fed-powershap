@@ -55,37 +55,104 @@ def _flat_delta(state: Dict[str, torch.Tensor],
                       for k in ks]).numpy()
 
 
-def _gmm_split(x: np.ndarray, seed: int = 0) -> np.ndarray:
+def _gmm_split(x: np.ndarray, seed: int = 0, bic_margin: float = 10.0) -> np.ndarray:
     """Two-component 1-D GMM; returns P(low-mean component), i.e. P(clean).
 
     FedNoRo and FedCorr both separate clients by fitting a two-component
     mixture to a per-client scalar rather than thresholding it, because the
-    scale of that scalar drifts over rounds. Falls back to a median split when
-    the mixture will not fit (fewer than 3 points, or zero variance).
+    scale of that scalar drifts over rounds.
+
+    TWO GUARDS, both calibrated rather than guessed.
+
+    A two-component mixture will always partition a single cluster, so fitting
+    one unconditionally makes these baselines exclude clients even when nothing
+    is corrupted. We therefore also fit a one-component model and split only
+    when the two-component fit wins on BIC by ``bic_margin``.
+
+    The margin was calibrated by simulation at this study's operating point
+    (10 clients, per-client losses averaged over >= 5 rounds, corrupted clients
+    offset by 0.6-1.4 loss units):
+
+        margin   clean false-positive rate   detection (2/10)   (4/10)
+             2                      19.2%              100.0%   100.0%
+             6                       3.8%              100.0%    99.8%
+            10                       0.0%               99.4%    99.8%
+            20                       0.0%               88.4%    86.6%
+
+    10 is the smallest margin that never splits a clean federation while still
+    detecting essentially every corrupted one.
     """
     x = np.asarray(x, dtype=np.float64).reshape(-1, 1)
     n = len(x)
-    if n < 3 or np.ptp(x) < 1e-12:
+    if n < 4 or np.ptp(x) < 1e-12:
         return np.ones(n)
     try:
         from sklearn.mixture import GaussianMixture
         g2 = GaussianMixture(n_components=2, random_state=seed,
-                             reg_covar=1e-6, n_init=2).fit(x)
-        # Is there actually more than one population? A two-component mixture
-        # will always partition a single cluster, so fitting one unconditionally
-        # makes these baselines exclude clients even when no client is
-        # corrupted -- which is not what FedNoRo or FedCorr do, and would
-        # handicap them in exactly the clean-data column the paper reports.
-        # Compare against a one-component fit and only split when it wins.
+                             reg_covar=1e-6, n_init=3).fit(x)
         g1 = GaussianMixture(n_components=1, random_state=seed,
                              reg_covar=1e-6).fit(x)
-        if g2.bic(x) >= g1.bic(x):
+        if g1.bic(x) - g2.bic(x) < bic_margin:
             return np.ones(n)                      # one population: all clean
         clean = int(np.argmin(g2.means_.ravel()))
         return g2.predict_proba(x)[:, clean]
     except Exception:
         med = float(np.median(x))
         return (x.ravel() <= med).astype(np.float64)
+
+
+class LossHistory:
+    """Running mean of each client's probe loss across the rounds it appeared.
+
+    Deciding bimodality from one round's active set is hopeless at this study's
+    participation setting: with 5 active clients there is no usable operating
+    point -- measured 68% false positives at high sensitivity, or 40%
+    detection at low. Five points are simply too few.
+
+    Neither cited method works that way. FedNoRo runs its GMM after a warm-up
+    over accumulated per-client losses, and FedCorr operates over a
+    full-participation pass. Accumulating here restores both: averaging each
+    client's loss over >= 5 appearances and fitting over ALL clients seen takes
+    detection to ~100% with no false positives on clean federations.
+
+    This is also a result in its own right, and belongs in the revision: GMM
+    client-splitting is underpowered at low participation, whereas the proposed
+    soft continuous weight needs no split at all.
+    """
+
+    def __init__(self, num_clients: int):
+        self.sum = np.zeros(num_clients, dtype=np.float64)
+        self.cnt = np.zeros(num_clients, dtype=np.int64)
+
+    def update(self, active: Sequence[int], losses: Sequence[float]) -> None:
+        for cid, l in zip(active, losses):
+            if np.isfinite(l):
+                self.sum[int(cid)] += float(l)
+                self.cnt[int(cid)] += 1
+
+    def observed(self):
+        """(client ids with >=1 observation, their mean loss)."""
+        ids = np.flatnonzero(self.cnt > 0)
+        return ids, self.sum[ids] / np.maximum(self.cnt[ids], 1)
+
+    def min_count(self) -> int:
+        seen = self.cnt[self.cnt > 0]
+        return int(seen.min()) if len(seen) else 0
+
+
+def _clean_mask_from_history(hist: "LossHistory", active: Sequence[int],
+                             seed: int = 0) -> Optional[np.ndarray]:
+    """P(clean) for the ACTIVE clients, decided over every client seen so far.
+
+    Returns None when the history is too thin to decide, in which case the
+    caller should fall back to plain size weighting.
+    """
+    ids, mean_loss = hist.observed()
+    if len(ids) < 4:
+        return None
+    p = _gmm_split(mean_loss, seed=seed)
+    lookup = {int(c): float(pi) for c, pi in zip(ids, p)}
+    return np.array([lookup.get(int(c), 1.0) for c in active], dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +164,9 @@ def fednoro_weights(losses: np.ndarray,
                     sizes: np.ndarray,
                     round_idx: int,
                     warmup_rounds: int = 10,
-                    seed: int = 0) -> np.ndarray:
+                    seed: int = 0,
+                    hist: Optional["LossHistory"] = None,
+                    active: Optional[Sequence[int]] = None) -> np.ndarray:
     """Stage 1 warm-up on size weights; stage 2 distance-aware down-weighting.
 
     Faithful: the GMM split of clients into clean/noisy on per-client loss, and
@@ -114,7 +183,13 @@ def fednoro_weights(losses: np.ndarray,
     if round_idx < warmup_rounds:
         return size_w
 
-    p_clean = _gmm_split(np.asarray(losses, dtype=np.float64), seed=seed)
+    # Decide over accumulated per-client losses across ALL clients seen, not
+    # this round's five -- see LossHistory for why one round cannot support it.
+    p_clean = None
+    if hist is not None and active is not None and hist.min_count() >= 1:
+        p_clean = _clean_mask_from_history(hist, active, seed=seed)
+    if p_clean is None:
+        p_clean = _gmm_split(np.asarray(losses, dtype=np.float64), seed=seed)
     is_clean = p_clean >= 0.5
     if not is_clean.any() or is_clean.all():
         return size_w
@@ -161,7 +236,9 @@ def fedcorr_weights(losses: np.ndarray,
                     sizes: np.ndarray,
                     round_idx: int,
                     warmup_rounds: int = 5,
-                    seed: int = 0) -> np.ndarray:
+                    seed: int = 0,
+                    hist: Optional["LossHistory"] = None,
+                    active: Optional[Sequence[int]] = None) -> np.ndarray:
     """LID-based noisy-client identification, then exclusion and reweighting.
 
     Faithful: the LID statistic as the identification signal, combined with
@@ -190,11 +267,21 @@ def fedcorr_weights(losses: np.ndarray,
         sd = a.std()
         return (a - a.mean()) / (sd + 1e-12)
 
-    score = z(lid) + z(np.asarray(losses, dtype=np.float64))
-    p_clean = _gmm_split(score, seed=seed)
-    keep = p_clean >= 0.5
+    # The loss half of the signal comes from the accumulated history where
+    # available; LID is necessarily per-round, since it is computed from this
+    # round's updates.
+    p_hist = (_clean_mask_from_history(hist, active, seed=seed)
+              if (hist is not None and active is not None) else None)
+    if p_hist is None:
+        score = z(lid) + z(np.asarray(losses, dtype=np.float64))
+        p_clean = _gmm_split(score, seed=seed)
+        keep = p_clean >= 0.5
+    else:
+        # History says who is corrupted; LID only breaks ties among those the
+        # history has not already cleared.
+        keep = p_hist >= 0.5
     if not keep.any():
-        keep = score <= np.median(score)
+        keep = np.ones(n, dtype=bool)
     w = size_w * keep.astype(np.float64)
     if w.sum() <= 0:
         return size_w

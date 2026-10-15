@@ -25,8 +25,8 @@ from federated.dcfi import (
     HIGH, LOW, MEDIUM, TIER_NAMES, ClientHistory, RewardChannel, RiskScorer,
     SafetyGate, select_dcfi, update_reliability,
 )
-from federated.noise_baselines import (feda3i_weights, fedcorr_weights,
-                                       fednoro_weights)
+from federated.noise_baselines import (LossHistory, feda3i_weights,
+                                       fedcorr_weights, fednoro_weights)
 from federated.selection import SelectionOutcome, select_clients
 from federated.shapley import _cap_weights, compute_cssv, cssv_to_weights
 from models import CLASSIFIER_LAYER_NAME
@@ -352,16 +352,22 @@ class Server:
             losses = np.array([self.clients[cid].probe_loss(self.global_model)
                                for cid in outcome.active], dtype=np.float64)
             self._last_losses = losses.tolist()
+            # Accumulate per-client losses across rounds. Both GMM baselines
+            # decide over the accumulated values, not over one round's active
+            # set -- five points cannot support a bimodality test.
+            if getattr(self, "_loss_hist", None) is None:
+                self._loss_hist = LossHistory(len(self.clients))
+            self._loss_hist.update(outcome.active, losses)
             if cfg.aggregation == "fednoro":
                 weights = fednoro_weights(
                     losses, client_states, global_state, active_sizes, round_idx,
                     warmup_rounds=int(getattr(cfg, "noise_baseline_warmup", 10)),
-                    seed=cfg.seed)
+                    seed=cfg.seed, hist=self._loss_hist, active=outcome.active)
             elif cfg.aggregation == "fedcorr":
                 weights = fedcorr_weights(
                     losses, client_states, global_state, active_sizes, round_idx,
                     warmup_rounds=int(getattr(cfg, "noise_baseline_warmup", 5)),
-                    seed=cfg.seed)
+                    seed=cfg.seed, hist=self._loss_hist, active=outcome.active)
             else:
                 weights = feda3i_weights(
                     losses, active_sizes, round_idx,
