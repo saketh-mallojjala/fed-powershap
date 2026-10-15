@@ -9,6 +9,8 @@ SW="python3 scripts/run_review_sweep.py --device mps"
 # Wait for any sweep already in flight so the queue never double-runs.
 while pgrep -f "run_review_sweep.py" > /dev/null; do sleep 30; done
 
+echo "=== APTOS tier 1 (corruption level x method) ==="
+$SW --dataset aptos --tier 1 --seeds 0 1
 echo "=== APTOS tier 2 (A.2 mixed, noise types, poisoning) ==="
 $SW --dataset aptos --tier 2 --seeds 0
 echo "=== APTOS tier 3 (alpha, participation, scaling) ==="
