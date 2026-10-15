@@ -330,6 +330,21 @@ METHOD_PRESETS = {
     # since contribution-weighted aggregation was measured to cost accuracy.
     # The gate may clip a suspicious classifier component or quarantine a
     # repeat offender, but it never scales an accepted client's influence.
+    # Noise-aware baselines (reviewer B.1). All sit on FedDyn with the same
+    # local solver as `proposed`, so the aggregation rule is the only thing
+    # that differs between them and the proposed method.
+    "fednoro": dict(
+        selection_strategy="random", aggregation="fednoro", local_solver="feddyn",
+        server_momentum=0.0, feddyn_alpha=0.01, feddyn_weight_consistent=True,
+        noise_baseline_warmup=10),
+    "fedcorr": dict(
+        selection_strategy="random", aggregation="fedcorr", local_solver="feddyn",
+        server_momentum=0.0, feddyn_alpha=0.01, feddyn_weight_consistent=True,
+        noise_baseline_warmup=5),
+    "feda3i": dict(
+        selection_strategy="random", aggregation="feda3i", local_solver="feddyn",
+        server_momentum=0.0, feddyn_alpha=0.01, feddyn_weight_consistent=True,
+        cssv_max_weight=0.3, feda3i_gamma=2.0, noise_baseline_warmup=5),
     "dcfi": dict(
         selection_strategy="random",     # overridden by the DCFI selector
         aggregation="feddyn", local_solver="feddyn",
