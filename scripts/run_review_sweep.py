@@ -43,7 +43,7 @@ METHODS = ["proposed", "feddyn", "fednoro", "fedcorr", "feda3i"]
 # Subsample caps keep the sweep tractable; 0 means use everything. OCTMNIST has
 # 97,477 training images and costs ~6.3 h per 40-round run at full size, which
 # no sweep can absorb. The cap is disclosed in the revision.
-MAX_TRAIN = {"octmnist": 20000, "isic": 0, "aptos": 0}
+MAX_TRAIN = {"octmnist": 10000, "isic": 0, "aptos": 0}
 
 
 def runs_for(dataset: str, tier: int, seeds: list[int]) -> list[dict]:
