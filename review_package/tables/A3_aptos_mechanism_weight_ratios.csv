@@ -1,0 +1,31 @@
+axis,method,seed,corruption,weight_ratio_corrupted,weight_ratio_shifted,weight_ratio_poisoner,accuracy
+noise,Proposed (ours),0,0.2,0.6744,,,0.6999
+noise,FedDyn,0,0.2,1.0,,,0.6999
+noise,FedA3I,0,0.2,0.2438,,,0.6985
+noise,Proposed (ours),0,0.4,0.8349,,,0.6439
+noise,FedNoRo,0,0.2,0.9428,,,0.678
+noise,FedCorr,0,0.2,0.259,,,0.6712
+noise,FedDyn,0,0.4,1.0,,,0.6221
+noise,FedNoRo,0,0.4,1.3578,,,0.6317
+noise,FedCorr,0,0.4,1.73,,,0.6057
+noise,FedA3I,0,0.4,0.6088,,,0.6166
+noise,Proposed (ours),0,0.6,0.8104,,,0.6494
+noise,FedDyn,0,0.6,1.0,,,0.6371
+noise,FedNoRo,0,0.6,1.1227,,,0.5757
+noise,FedCorr,0,0.6,1.0911,,,0.5484
+noise,FedA3I,0,0.6,0.9128,,,0.6398
+noise,Proposed (ours),1,0.2,0.4972,,,0.734
+noise,FedDyn,1,0.2,1.0,,,0.7231
+noise,FedNoRo,1,0.2,0.7347,,,0.7381
+noise,FedCorr,1,0.2,0.7208,,,0.7367
+noise,FedA3I,1,0.2,0.1165,,,0.7353
+noise,Proposed (ours),1,0.4,0.1545,,,0.7271
+noise,FedDyn,1,0.4,1.0,,,0.7149
+noise,FedNoRo,1,0.4,0.1535,,,0.7381
+noise,FedCorr,1,0.4,0.0518,,,0.7381
+noise,FedA3I,1,0.4,0.0334,,,0.7476
+noise,Proposed (ours),1,0.6,0.5539,,,0.704
+noise,FedDyn,1,0.6,1.0,,,0.6917
+noise,FedNoRo,1,0.6,0.5266,,,0.6835
+noise,FedCorr,1,0.6,0.5084,,,0.7108
+noise,FedA3I,1,0.6,0.574,,,0.7121
