@@ -1,0 +1,5 @@
+method,num_clients,active_size_m,alpha,noisy_client_frac,accuracy
+Proposed (ours),20,10,0.3,0.4,0.6344
+Proposed (ours),50,25,0.3,0.4,0.6985
+FedDyn,20,10,0.3,0.4,0.6126
+FedDyn,50,25,0.3,0.4,0.6685

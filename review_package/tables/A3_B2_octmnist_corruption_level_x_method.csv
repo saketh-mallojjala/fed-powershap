@@ -1,0 +1,6 @@
+method,acc@0%,n@0%,paired_delta@0%,sign@0%,acc@20%,n@20%,paired_delta@20%,sign@20%,acc@40%,n@40%,paired_delta@40%,sign@40%,acc@60%,n@60%,paired_delta@60%,sign@60%
+Proposed (ours),0.684,1,0.0,mixed,0.698,1,-0.001,all-,0.71,1,0.012,all+,0.471,1,0.011,all+
+FedDyn,0.684,1,,,0.699,1,,,0.698,1,,,0.46,1,,
+FedNoRo,0.693,1,0.009,all+,0.7,1,0.001,all+,0.702,1,0.004,all+,0.331,1,-0.129,all-
+FedCorr,0.703,1,0.019,all+,0.705,1,0.006,all+,0.705,1,0.007,all+,0.43,1,-0.03,all-
+FedA3I,0.693,1,0.009,all+,0.709,1,0.01,all+,0.705,1,0.007,all+,0.413,1,-0.047,all-

@@ -30,3 +30,33 @@
 | noise | FedNoRo | 1 | 0.6 | 0.5266 |  |  | 0.6835 |
 | noise | FedCorr | 1 | 0.6 | 0.5084 |  |  | 0.7108 |
 | noise | FedA3I | 1 | 0.6 | 0.574 |  |  | 0.7121 |
+| type | Proposed (ours) | 0 | 0.4 | 1.0038 |  |  | 0.5703 |
+| type | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.5334 |
+| type | FedNoRo | 0 | 0.4 | 2.2642 |  |  | 0.4748 |
+| type | FedCorr | 0 | 0.4 | 8333333335.19 |  |  | 0.4789 |
+| type | FedA3I | 0 | 0.4 | 0.7325 |  |  | 0.4488 |
+| shift | Proposed (ours) | 0 | 0.0 |  | 0.5763 |  | 0.704 |
+| shift | FedDyn | 0 | 0.0 |  | 1.0 |  | 0.6944 |
+| shift | FedNoRo | 0 | 0.0 |  | 0.6063 |  | 0.6398 |
+| shift | FedCorr | 0 | 0.0 |  | 0.5703 |  | 0.6412 |
+| shift | FedA3I | 0 | 0.0 |  | 0.6148 |  | 0.6808 |
+| mixed | Proposed (ours) | 0 | 0.3 | 0.6584 | 0.8713 |  | 0.6398 |
+| mixed | FedDyn | 0 | 0.3 | 1.0 | 1.0 |  | 0.6398 |
+| poison | Proposed (ours) | 0 |  |  |  | 0.9018 | 0.5471 |
+| poison | FedDyn | 0 |  |  |  | 1.0 | 0.5252 |
+| poison | Proposed (ours) | 0 |  |  |  | 0.7945 | 0.101 |
+| poison | FedDyn | 0 |  |  |  | 1.0 | 0.4925 |
+| poison | Proposed (ours) | 0 |  |  |  | 0.9706 | 0.6971 |
+| poison | FedDyn | 0 |  |  |  | 1.0 | 0.7012 |
+| alpha | Proposed (ours) | 0 | 0.4 | 1.1127 |  |  | 0.6276 |
+| alpha | Proposed (ours) | 0 | 0.4 | 0.433 |  |  | 0.704 |
+| part | Proposed (ours) | 0 | 0.4 | 1.0 |  |  | 0.6303 |
+| part | Proposed (ours) | 0 | 0.4 | 0.8103 |  |  | 0.6548 |
+| scale | Proposed (ours) | 0 | 0.4 | 0.5757 |  |  | 0.6344 |
+| scale | Proposed (ours) | 0 | 0.4 | 0.4153 |  |  | 0.6985 |
+| alpha | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.6658 |
+| alpha | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.7012 |
+| part | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.6003 |
+| part | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.6098 |
+| scale | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.6126 |
+| scale | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.6685 |

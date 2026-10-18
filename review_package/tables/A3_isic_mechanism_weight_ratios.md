@@ -1,0 +1,17 @@
+| axis | method | seed | corruption | weight_ratio_corrupted | weight_ratio_shifted | weight_ratio_poisoner | accuracy |
+|---|---|---|---|---|---|---|---|
+| noise | Proposed (ours) | 0 | 0.2 | 0.9428 |  |  | 0.7042 |
+| noise | FedDyn | 0 | 0.2 | 1.0 |  |  | 0.7037 |
+| noise | FedNoRo | 0 | 0.2 | 1.731 |  |  | 0.6579 |
+| noise | FedCorr | 0 | 0.2 | 0.7065 |  |  | 0.7107 |
+| noise | FedA3I | 0 | 0.2 | 0.2884 |  |  | 0.7267 |
+| noise | Proposed (ours) | 0 | 0.4 | 1.1742 |  |  | 0.604 |
+| noise | FedDyn | 0 | 0.4 | 1.0 |  |  | 0.6349 |
+| noise | FedNoRo | 0 | 0.4 | 2.7303 |  |  | 0.4175 |
+| noise | FedCorr | 0 | 0.4 | 2.6289 |  |  | 0.4993 |
+| noise | FedA3I | 0 | 0.4 | 1.1595 |  |  | 0.6529 |
+| noise | Proposed (ours) | 0 | 0.6 | 0.8589 |  |  | 0.6499 |
+| noise | FedDyn | 0 | 0.6 | 1.0 |  |  | 0.6773 |
+| noise | FedNoRo | 0 | 0.6 | 0.8148 |  |  | 0.6658 |
+| noise | FedCorr | 0 | 0.6 | 0.534 |  |  | 0.6209 |
+| noise | FedA3I | 0 | 0.6 | 6724.0469 |  |  | 0.6274 |

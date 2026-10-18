@@ -1,0 +1,16 @@
+axis,method,seed,corruption,weight_ratio_corrupted,weight_ratio_shifted,weight_ratio_poisoner,accuracy
+noise,Proposed (ours),0,0.2,0.3005,,,0.698
+noise,FedDyn,0,0.2,1.0,,,0.699
+noise,FedNoRo,0,0.2,0.4957,,,0.7
+noise,FedCorr,0,0.2,0.4957,,,0.705
+noise,FedA3I,0,0.2,0.062,,,0.709
+noise,Proposed (ours),0,0.4,0.3723,,,0.71
+noise,FedDyn,0,0.4,1.0,,,0.698
+noise,FedNoRo,0,0.4,0.4804,,,0.702
+noise,FedCorr,0,0.4,0.4864,,,0.705
+noise,FedA3I,0,0.4,0.172,,,0.705
+noise,Proposed (ours),0,0.6,1.1135,,,0.471
+noise,FedDyn,0,0.6,1.0,,,0.46
+noise,FedNoRo,0,0.6,2.3568,,,0.331
+noise,FedCorr,0,0.6,2.2635,,,0.43
+noise,FedA3I,0,0.6,19549.0178,,,0.413

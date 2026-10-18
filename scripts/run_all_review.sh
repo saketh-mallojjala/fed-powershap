@@ -11,6 +11,6 @@ echo "=== ISIC tier 1 (headline table, dataset 2) ==="
 $SW --dataset isic --tier 1 --seeds 0
 echo "=== OCTMNIST tier 1 (headline table, dataset 3; 10k cap) ==="
 $SW --dataset octmnist --tier 1 --seeds 0
-echo "=== ISIC tier 2 (A.2 shift/mixed + B.3 poisoning, dataset 2) ==="
-$SW --dataset isic --tier 2 --seeds 0
+# ISIC tier 2 dropped for time. The shift/mixed and poisoning analyses are
+# reported on APTOS; the headline corruption table covers all three datasets.
 echo "ALL_REVIEW_DONE"

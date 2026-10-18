@@ -1,0 +1,8 @@
+condition,method,weight_ratio_corrupted,weight_ratio_shifted_but_CORRECT,separation (shifted - corrupted),accuracy
+shift,Proposed (ours),,0.5763,,0.704
+shift,FedDyn,,1.0,,0.6944
+shift,FedNoRo,,0.6063,,0.6398
+shift,FedCorr,,0.5703,,0.6412
+shift,FedA3I,,0.6148,,0.6808
+mixed,Proposed (ours),0.6584,0.8713,0.2129,0.6398
+mixed,FedDyn,1.0,1.0,0.0,0.6398
