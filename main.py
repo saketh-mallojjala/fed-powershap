@@ -147,6 +147,10 @@ def main():
             # Ground truth for the mechanism analysis: which clients had their
             # labels corrupted. Set by build_federated_datasets; [] when clean.
             "noisy_client_ids": getattr(cfg, "noisy_client_ids", []),
+            # Ground truth for reviewer A's question: a real covariate shift but
+            # CORRECT labels. A loss-based score that down-weights these is
+            # confusing "different" with "corrupted".
+            "shifted_client_ids": getattr(cfg, "shifted_client_ids", []),
             # -1 unless this is a leave-one-out run; ids above are post-exclusion.
             "excluded_client": int(getattr(cfg, "exclude_client", -1)),
             # Ground truth for the C2 free-rider analysis.
